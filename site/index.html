@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lorcana Meta Report</title>
+    <meta
+      name="description"
+      content="What the current Disney Lorcana tournament meta is playing: ink pair share, card inclusion rates, and the cards you should expect to face."
+    />
+    <link rel="stylesheet" href="assets/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>🎴</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar__inner">
+        <a class="brand" href="#/">Lorcana&nbsp;Meta <span>Report</span></a>
+        <nav class="tabs" id="tabs" aria-label="Views">
+          <a href="#/">Meta</a>
+          <a href="#/threats">What you'll face</a>
+          <a href="#/deck">Your deck</a>
+          <a href="#/about">About</a>
+        </nav>
+        <button class="icon-button" id="theme-toggle" type="button">Theme</button>
+      </div>
+    </header>
+
+    <main class="shell" id="view">
+      <div class="empty">Loading meta report…</div>
+    </main>
+
+    <div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+
+    <aside class="inspector" id="inspector" hidden aria-label="Card details">
+      <button class="inspector__close" id="inspector-close" type="button" aria-label="Close">
+        ×
+      </button>
+      <div id="inspector-body"></div>
+    </aside>
+
+    <script src="assets/app.js"></script>
+  </body>
+</html>

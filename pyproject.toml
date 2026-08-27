@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lorcana-meta"
+version = "0.1.0"
+description = "Build a Disney Lorcana tournament-meta report and publish it as a static site"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["requests>=2.32"]
+
+# HTML parsing is only needed by the inkdecks source, so it stays out of the core
+# install. Regex-parsing a real website's markup is how you get silently wrong
+# numbers when its layout shifts.
+[project.optional-dependencies]
+inkdecks = ["beautifulsoup4>=4.12"]
+# Only needed if inkdecks' bot filter starts refusing plain HTTP requests. Their
+# operators confirmed it is acceptable; it stays opt-in because the plain path works
+# and because reaching for it first hides more likely explanations.
+cloudscraper = ["beautifulsoup4>=4.12", "cloudscraper>=1.2.71"]
+
+[project.urls]
+Source = "https://github.com/"
+
+# Installing the project puts `lorcana-meta` on PATH, which is the same command on
+# Windows, macOS and Linux. Without it the only way in is `PYTHONPATH=src python -m
+# lorcana_meta`, and that prefix is POSIX shell syntax - PowerShell reads it as a
+# command name and fails.
+[project.scripts]
+lorcana-meta = "lorcana_meta.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

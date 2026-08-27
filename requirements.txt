@@ -1,0 +1,2 @@
+# Runtime deps for the data pipeline. The published site itself has zero deps.
+requests>=2.32

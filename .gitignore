@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Local cache of the card database (re-downloaded on demand)
+.cache/
+
+# Scratch
+.scratch/
+
+# Generated single-file report (tools/bundle_report.py). Regenerate it; don't commit
+# it - and if the data came from somewhere you may not redistribute, keep it local.
+/report.html
+
+# The generated report data. Deliberately NOT tracked.
+#
+# It is build output, and after any inkdecks build it holds data licensed for private
+# use only. Tracking it means the next build shows up as a modified file that is easy
+# to commit without thinking - and once it is in history, making this repo public
+# later republishes it retroactively. Git history is hard to scrub.
+#
+# Regenerate in seconds:  .\scriptsuild.ps1 -Sample
+site/data/meta.json

@@ -1,0 +1,900 @@
+/* ==========================================================================
+   Design tokens.
+
+   Two palettes with different jobs:
+
+   1. Chart marks use ONE hue (--bar), because every chart here compares
+      magnitude - bar length already carries the value, so colouring bars by
+      category would burn the only free channel on information the chart
+      already shows.
+
+   2. Ink colours are a fixed domain palette, the way status colours are fixed:
+      Amber is Amber. Six domain-locked hues cannot clear the colourblind-
+      separation gates (Sapphire vs Amethyst measures dE 4.1 under deuteranopia,
+      and Steel is grey by definition), so an ink chip NEVER carries meaning
+      by colour alone - it always ships with the ink's initial inside it and the
+      ink's name in text beside it. All twelve steps clear 3:1 against their
+      surface.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f2f1ed;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+
+  --bar: #2a78d6;
+  --track: #cde2fb;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+
+  --amber: #a8741a;
+  --amethyst: #9b3fc4;
+  --emerald: #1e8f5c;
+  --ruby: #d0333d;
+  --sapphire: #1a6fd4;
+  --steel: #6b7885;
+
+  --radius: 10px;
+  --gap: 2px; /* the surface gap that separates touching marks */
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #232322;
+    --text: #ffffff;
+    --text-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --bar: #3987e5;
+    --track: #184f95;
+
+    --amber: #e0a63c;
+    --amethyst: #b877e0;
+    --emerald: #35b97a;
+    --ruby: #e8615f;
+    --sapphire: #4e97e8;
+    --steel: #93a1b0;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232322;
+  --text: #ffffff;
+  --text-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --bar: #3987e5;
+  --track: #184f95;
+
+  --amber: #e0a63c;
+  --amethyst: #b877e0;
+  --emerald: #35b97a;
+  --ruby: #e8615f;
+  --sapphire: #4e97e8;
+  --steel: #93a1b0;
+}
+
+/* ------------------------------------------------------------------ reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 15px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ----------------------------------------------------------------- layout */
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 20px 72px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--page) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar__inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brand span {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+nav.tabs {
+  display: flex;
+  gap: var(--gap);
+  margin-right: auto;
+}
+
+nav.tabs a {
+  padding: 6px 12px;
+  border-radius: 999px;
+  text-decoration: none;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+nav.tabs a:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+nav.tabs a[aria-current="page"] {
+  background: var(--text);
+  color: var(--page);
+}
+
+.icon-button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.icon-button:hover {
+  color: var(--text);
+  border-color: var(--axis);
+}
+
+/* The one filter row, above everything it scopes. */
+.filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 16px 0 4px;
+}
+
+.filters input[type="search"],
+.filters select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  font: inherit;
+  min-width: 200px;
+}
+
+.filters label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* ------------------------------------------------------------------ cards */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px 20px;
+}
+
+.card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+h1 {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  margin: 26px 0 2px;
+}
+
+h2 {
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.subtitle {
+  color: var(--text-2);
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.card .subtitle {
+  margin-bottom: 18px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (min-width: 900px) {
+  .grid--2 {
+    grid-template-columns: 1fr 1fr;
+  }
+  .grid--sidebar {
+    grid-template-columns: 1.6fr 1fr;
+  }
+}
+
+/* ------------------------------------------------------- figures & tiles */
+
+.kpis {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: 16px;
+}
+
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 16px;
+}
+
+.tile__label {
+  font-size: 12px;
+  color: var(--text-2);
+  text-transform: none;
+}
+
+.tile__value {
+  font-size: 26px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+  margin-top: 2px;
+  /* proportional figures: tabular-nums makes a big number look loose */
+}
+
+.tile__note {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.tile--hero .tile__value {
+  font-size: 52px;
+  line-height: 1.05;
+  font-weight: 600;
+}
+
+@media (min-width: 700px) {
+  .tile--hero {
+    grid-column: span 2;
+  }
+}
+
+/* --------------------------------------------------------- ink chip marks */
+
+.ink-chip {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--surface);
+  background: var(--muted);
+  flex: none;
+  user-select: none;
+}
+
+.ink-chip--amber { background: var(--amber); }
+.ink-chip--amethyst { background: var(--amethyst); }
+.ink-chip--emerald { background: var(--emerald); }
+.ink-chip--ruby { background: var(--ruby); }
+.ink-chip--sapphire { background: var(--sapphire); }
+.ink-chip--steel { background: var(--steel); }
+
+.ink-pair {
+  display: inline-flex;
+  gap: var(--gap);
+  vertical-align: middle;
+  flex: none;
+}
+
+/* ------------------------------------------------------------ bar charts */
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, var(--label-col, 190px)) 1fr auto;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  padding: 3px 6px;
+  margin: 0 -6px;
+  border-radius: 8px;
+}
+
+a.bar-row:hover {
+  background: var(--surface-2);
+}
+
+.bar-row__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  min-width: 0;
+}
+
+.bar-row__label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-row__track {
+  position: relative;
+  height: 20px; /* mark <= 24px, leftover of the band stays air */
+  background: linear-gradient(var(--grid), var(--grid)) left center / 100% 1px no-repeat;
+}
+
+.bar-row__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--bar);
+  /* square at the baseline, 4px rounded at the data end */
+  border-radius: 0 4px 4px 0;
+  min-width: 2px;
+}
+
+.bar-row__value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+/* Column chart (cost curve). */
+.columns {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--gap);
+  height: 150px;
+  border-bottom: 1px solid var(--axis);
+  padding-bottom: 0;
+}
+
+.column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  height: 100%;
+  gap: 4px;
+  min-width: 0;
+}
+
+.column__cap {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.column__fill {
+  width: 100%;
+  max-width: 24px;
+  background: var(--bar);
+  border-radius: 4px 4px 0 0;
+  min-height: 2px;
+}
+
+.columns-axis {
+  display: flex;
+  gap: var(--gap);
+  margin-top: 6px;
+}
+
+.columns-axis span {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------- tables */
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+thead th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+
+thead th.num,
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+tbody td {
+  padding: 7px 10px 7px 0;
+  border-bottom: 1px solid var(--grid);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+tbody tr:hover {
+  background: var(--surface-2);
+}
+
+td.name {
+  min-width: 210px;
+}
+
+.card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-name button {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+.card-name button:hover {
+  text-decoration-color: var(--axis);
+}
+
+/* Inline meter inside a table cell: the fill is the value, the track a lighter
+   step of the same ramp so the row reads even at 2%. */
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 156px;
+}
+
+.meter__track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--grid);
+  overflow: hidden;
+}
+
+.meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--bar);
+  border-radius: 0 3px 3px 0;
+}
+
+.meter__value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  width: 46px;
+  text-align: right;
+}
+
+/* --------------------------------------------------------------- badges */
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.badge--core {
+  border-color: color-mix(in srgb, var(--bar) 45%, transparent);
+  color: var(--bar);
+}
+
+.badge--own {
+  border-color: color-mix(in srgb, var(--good) 55%, transparent);
+  color: var(--good);
+}
+
+.badge--gap {
+  border-color: color-mix(in srgb, var(--critical) 55%, transparent);
+  color: var(--critical);
+}
+
+/* -------------------------------------------------------------- tooltip */
+
+.tooltip {
+  position: fixed;
+  z-index: 60;
+  max-width: 300px;
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  font-size: 13px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.tooltip[data-open="true"] {
+  opacity: 1;
+}
+
+.tooltip__title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.tooltip dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 12px;
+  margin: 0;
+}
+
+.tooltip dt {
+  color: var(--text-2);
+}
+
+.tooltip dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------- card inspector */
+
+.inspector {
+  position: fixed;
+  inset: auto 16px 16px auto;
+  z-index: 50;
+  width: min(340px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.22);
+}
+
+.inspector[hidden] {
+  display: none;
+}
+
+.inspector img {
+  width: 100%;
+  border-radius: 8px;
+  display: block;
+  background: var(--surface-2);
+}
+
+.inspector__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.inspector__text {
+  white-space: pre-line;
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-top: 8px;
+}
+
+.inspector__meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* ----------------------------------------------------------- prep tools */
+
+textarea {
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 12px;
+}
+
+.legend b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* --------------------------------------------------------------- footer */
+
+footer.credits {
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+  padding: 20px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.7;
+}
+
+footer.credits a {
+  color: var(--text);
+}
+
+.empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.warn {
+  border-left: 2px solid var(--warning);
+  padding: 8px 0 8px 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  margin-top: 14px;
+}
+
+.toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--gap);
+  margin-top: 12px;
+}
+
+@media print {
+  .topbar,
+  .toggle-row,
+  .inspector,
+  .tooltip {
+    display: none !important;
+  }
+}
+
+/* A tile whose value is words, not a number: display sizes make a phrase like
+   "Core Constructed" wrap and overflow the card. */
+.tile--text .tile__value {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.tile--hero.tile--text .tile__value {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+/* -------------------------------------------------- archetypes within a pair */
+
+.scope-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 0;
+}
+
+.scope-pill {
+  font-size: 13px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  text-decoration: none;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.scope-pill:hover {
+  color: var(--text);
+  border-color: var(--axis);
+}
+
+.scope-pill--on {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--page);
+}
+
+.archetype {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--grid);
+}
+
+.archetype:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.archetype__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.archetype__head a {
+  text-decoration: none;
+}
+
+.archetype__head a:hover b {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.archetype__meta {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+
+.archetype__sig {
+  font-size: 13px;
+  color: var(--text-2);
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.archetype__sig button {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+.archetype__aka {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.archetype .meter {
+  max-width: 420px;
+}
+
+/* Copy-count spread: an ordered strip, not four categories. One hue at stepped
+   opacity, so 1 copy reads as fainter than 4 without hue carrying the meaning. */
+.spread {
+  display: inline-flex;
+  gap: var(--gap);
+  width: 78px;
+  height: 8px;
+  border-radius: 2px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.spread__seg {
+  background: var(--bar);
+  min-width: 2px;
+}
+
+tbody tr:hover .spread__seg {
+  background: var(--bar);
+}

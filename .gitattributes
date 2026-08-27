@@ -1,0 +1,11 @@
+# Normalise line endings so a Windows checkout does not rewrite the published site.
+* text=auto eol=lf
+
+# Windows-native files keep CRLF, or PowerShell and cmd get upset.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Generated report: one line, and diffing it is never useful.
+site/data/meta.json -diff linguist-generated
+data/decks/sample-field.json -diff linguist-generated

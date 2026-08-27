@@ -1,0 +1,108 @@
+name: build report and publish
+
+# Rebuilds the meta report and publishes the site to GitHub Pages.
+#
+# Setup, once:
+#   1. Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+#   2. Settings -> Secrets and variables -> Actions -> new secret TOPDECK_API_KEY
+#      (a free key from https://topdeck.gg/developers).
+#
+# Without that secret the job still publishes, but from the synthetic sample field -
+# and the site says so on its own front page, so a demo can never be mistaken for
+# real tournament data.
+
+on:
+  schedule:
+    # 05:20 UTC daily. Tournaments land over the weekend; a daily rebuild keeps the
+    # window honest without hammering the API.
+    - cron: "20 5 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days back to include"
+        default: "30"
+      top:
+        description: "Keep finishes this high or better (0 = all)"
+        default: "32"
+      format:
+        description: "Lorcana format, exactly as TopDeck spells it"
+        default: "Core Constructed"
+        type: choice
+        options:
+          - Core Constructed
+          - Infinity Constructed
+      min_players:
+        description: "Ignore events smaller than this (blank = no minimum)"
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A queued run should publish the newest data, not fight the one in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache the card database
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: cards-${{ github.run_id }}
+          restore-keys: cards-
+
+      - name: Build the report
+        env:
+          TOPDECK_API_KEY: ${{ secrets.TOPDECK_API_KEY }}
+          DAYS: ${{ github.event.inputs.days || '30' }}
+          TOP: ${{ github.event.inputs.top || '32' }}
+          FMT: ${{ github.event.inputs.format || 'Core Constructed' }}
+          MIN_PLAYERS: ${{ github.event.inputs.min_players }}
+        run: |
+          set -euo pipefail
+          ARGS=(build --last "$DAYS" --top "$TOP" --format "$FMT")
+          if [ -n "${MIN_PLAYERS:-}" ]; then
+            ARGS+=(--min-players "$MIN_PLAYERS")
+          fi
+
+          if [ -n "${TOPDECK_API_KEY:-}" ]; then
+            echo "::notice::Building from TopDeck.gg tournament data"
+            PYTHONPATH=src python -m lorcana_meta "${ARGS[@]}" --source topdeck
+          else
+            echo "::warning::TOPDECK_API_KEY is not set - publishing the synthetic sample field instead. Add the secret to publish real tournament data."
+            python tools/generate_sample_decks.py
+            PYTHONPATH=src python -m lorcana_meta "${ARGS[@]}" --source local
+          fi
+
+      - name: Check the report before publishing it
+        run: python tests/check_report.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

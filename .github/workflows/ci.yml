@@ -1,0 +1,92 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Windows is a first-class target here, not an afterthought: the console-encoding
+    # bug this project hit only shows up on a non-UTF-8 code page, and shell syntax
+    # differences (PYTHONPATH=..., $env:...) only show up on PowerShell.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.os == 'windows-latest' && 'pwsh' || 'bash' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Installing the project is also what puts `lorcana-meta` on PATH, so the
+      # steps below exercise the same entry point a user gets.
+      - name: Install
+        run: python -m pip install -e ".[inkdecks]"
+
+      - name: Pipeline tests
+        run: python tests/test_pipeline.py
+
+      - name: Archetype clustering tests
+        run: python tests/test_cluster.py
+
+      - name: Local source and importer tests
+        run: python tests/test_local_source.py
+
+      # Fixture-driven, so this needs no permission, no key and no network. It is
+      # what tells you inkdecks changed their markup.
+      - name: inkdecks parser tests
+        run: python tests/test_inkdecks.py
+
+      # Pins the browser-side decklist parser to the Python one. They have drifted
+      # before, and when they drift a pasted list silently stops matching.
+      - name: Site parsing matches the pipeline
+        run: node tests/test_site_parsing.mjs
+
+      - name: Build a report end to end from the sample field
+        run: |
+          python tools/generate_sample_decks.py
+          lorcana-meta build --source local --last 40 --top 32
+
+      - name: Check the report
+        run: python tests/check_report.py
+
+      # The offline bundle is the only private-report route, so a regression in it
+      # must fail here rather than the next time someone actually needs the file.
+      - name: Single-file bundle stays self-contained
+        run: python tests/test_bundle.py
+
+  # A legacy Windows code page is what broke printing card names. Prove the fix
+  # holds rather than trusting that every runner happens to be on UTF-8.
+  windows-legacy-encoding:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install -e ".[inkdecks]"
+
+      - name: Build with a non-UTF-8 console
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1250
+        run: |
+          python tools/generate_sample_decks.py
+          lorcana-meta build --source local --last 40 --top 32
+          python tests/check_report.py
