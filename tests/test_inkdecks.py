@@ -322,6 +322,176 @@ def test_format_badge_is_matched_by_text_not_position():
         )
 
 
+# ------------------------------------------------------------ event size filter
+
+def test_small_events_are_filtered_before_any_deck_page_is_fetched():
+    """The saving is the point: attendance is already on the listing row.
+
+    Filtering after the fetch would mean making 200 requests and discarding the
+    results - rude to the site and slow for no reason.
+    """
+    from datetime import date
+
+    from lorcana_meta.models import DeckCard
+
+    source = isolated(delay=0.5, min_players=32)
+    source._fetch_index = lambda start, end: [
+        {"deck_id": "big", "deck_name": "regional", "path": "/a", "standing": 1, "players": 128},
+        {"deck_id": "small", "deck_name": "friday", "path": "/b", "standing": 1, "players": 12},
+        {"deck_id": "edge", "deck_name": "exactly", "path": "/c", "standing": 2, "players": 32},
+        {"deck_id": "unknown", "deck_name": "no size", "path": "/d", "standing": 3, "players": None},
+    ]
+    fetched = []
+    source._fetch_decklist = lambda stub: fetched.append(stub["deck_id"]) or [
+        DeckCard("Card", 60)
+    ]
+    source._to_deck = lambda stub, cards: stub["deck_id"]
+
+    kept = source.fetch(date(2026, 8, 1), date(2026, 8, 31))
+    check("small" not in fetched, f"the 12-player event was never fetched: {fetched}")
+    check("big" in fetched and "edge" in fetched, f"32 and up are kept: {fetched}")
+    check(
+        "unknown" in fetched,
+        "an event of unknown size is kept - we do not silently drop what we cannot judge",
+    )
+    check(sorted(kept) == ["big", "edge", "unknown"], f"three decks through: {kept}")
+
+
+def test_no_min_players_fetches_everything():
+    from datetime import date
+
+    from lorcana_meta.models import DeckCard
+
+    source = isolated(delay=0.5)
+    source._fetch_index = lambda start, end: [
+        {"deck_id": str(n), "deck_name": "x", "path": f"/{n}", "standing": 1, "players": n}
+        for n in (4, 12, 200)
+    ]
+    fetched = []
+    source._fetch_decklist = lambda stub: fetched.append(stub["deck_id"]) or [
+        DeckCard("Card", 60)
+    ]
+    source._to_deck = lambda stub, cards: stub["deck_id"]
+
+    source.fetch(date(2026, 8, 1), date(2026, 8, 31))
+    check(len(fetched) == 3, f"no filter means no filtering: {fetched}")
+
+
+# ------------------------------------------------------------------ transports
+
+def test_default_transport_is_the_polite_one():
+    """Impersonation is a fallback, never the opening move."""
+    source = isolated()
+    check(source.transport == "auto", f"auto by default, got {source.transport}")
+    check(source._session.label == "plain", f"starts plain, got {source._session.label}")
+
+
+def test_plain_never_escalates():
+    check(isolated(transport="plain")._session.label == "plain", "plain stays plain")
+
+
+def test_transport_is_remembered_between_runs():
+    """Rediscovering a standing block costs two refusals and a minute of backoff.
+
+    The cache already knows the answer, so a build that needed curl_cffi yesterday
+    starts there today instead of earning the same 403s again.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        first = InkdecksSource(consent=True, cache_dir=directory)
+        check(first._session.label == "plain", "nothing remembered yet -> plain")
+
+        first._save_transport("curl_cffi")
+        second = InkdecksSource(consent=True, cache_dir=directory)
+        check(
+            second._session.label == "curl_cffi",
+            f"picks up what worked, got {second._session.label}",
+        )
+
+        # An explicit --inkdecks-scraper plain still overrides the memory.
+        third = InkdecksSource(consent=True, cache_dir=directory, transport="plain")
+        check(third._session.label == "plain", "an explicit choice beats the memory")
+
+
+def test_a_corrupt_transport_file_falls_back_to_plain():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "transport.json"
+        for junk in ("not json", '{"transport": "selenium"}', "{}", '{"transport": 7}'):
+            path.write_text(junk, encoding="utf-8")
+            source = InkdecksSource(consent=True, cache_dir=directory)
+            check(
+                source._session.label == "plain",
+                f"{junk!r} -> plain, got {source._session.label}",
+            )
+
+
+def test_impersonating_session_is_still_read_only():
+    """The guarantee must not depend on which transport is in play."""
+    from lorcana_meta.sources.inkdecks import _impersonating_session
+
+    session = _impersonating_session({"User-Agent": "x"})
+    check(session.label == "curl_cffi", f"label: {session.label}")
+    for method in ("post", "put", "patch", "delete", "request"):
+        try:
+            getattr(session, method)
+            FAILURES.append(f"{method}() is reachable on the curl_cffi session")
+        except SourceError:
+            pass
+    check(callable(session.get), "get() still works")
+
+
+# ----------------------------------------------------------- read-only by design
+
+def test_the_session_cannot_write():
+    """inkdecks asked that this not disturb their site.
+
+    Read-only is enforced rather than promised: the session wrapper exposes `get`
+    and refuses everything that could change state on the far end. A future edit
+    that reaches for `.post()` fails here instead of submitting something.
+    """
+    source = isolated()
+    for method in ("post", "put", "patch", "delete", "request"):
+        try:
+            getattr(source._session, method)
+            FAILURES.append(f"{method}() is reachable on the session")
+        except SourceError as error:
+            check("read-only" in str(error), f"{method}: says why - {error}")
+
+
+def test_get_is_still_reachable():
+    check(callable(isolated()._session.get), "get() works, or nothing does")
+
+
+def test_only_allowed_paths_are_ever_requested():
+    """Every path this source builds, checked against their robots.txt Disallow list.
+
+    Their disallowed set is exactly the write-shaped and expensive endpoints
+    (/decksubmissions, /suggestions/add, /image-cache/, the autocomplete JSON).
+    Requesting one would be both rude and a breach of the crawl rules they publish.
+    """
+    from lorcana_meta.sources.inkdecks import CATEGORIES
+
+    disallowed = (
+        "/cgi-bin/", "/decks/visual", "/suggestions/add", "/decks/similar-decks",
+        "/decksubmissions", "/cdn-cgi/rum", "/autocomplete/powersearch.json",
+        "/image-cache/",
+    )
+    built = ["/lorcana-metagame/deck-example-123"]
+    for segment in CATEGORIES.values():
+        built.append(f"/lorcana-decks/{segment}" if segment else "/lorcana-decks")
+
+    for path in built:
+        for bad in disallowed:
+            check(
+                not path.startswith(bad),
+                f"{path} collides with the disallowed {bad}",
+            )
+
+
+def test_bytes_read_is_counted():
+    """So the footprint can be reported rather than guessed at."""
+    check(isolated()._session.bytes_read == 0, "starts at zero and only grows on GET")
+
+
 # --------------------------------------------------------- one run at a time
 
 def test_two_builds_cannot_run_at_once():
@@ -598,7 +768,7 @@ def test_defaults_are_polite():
     check(source.delay >= 2.0, f"the default delay is {source.delay}s")
     check(source.max_decks and source.max_decks <= 2000, f"max_decks={source.max_decks}")
     check(source.transport == "auto", "plain HTTP first, escalate only if blocked")
-    check(source._using_cloudscraper is False, "cloudscraper is not used up front")
+    check(source._session.label == "plain", "impersonation is not used up front")
 
 
 def test_delay_has_a_floor():

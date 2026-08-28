@@ -19,11 +19,7 @@ from lorcana_meta.analyze import (  # noqa: E402
 )
 from lorcana_meta.cards import CardIndex, normalize_name  # noqa: E402
 from lorcana_meta.console import configure_output  # noqa: E402
-from lorcana_meta.decklist import (  # noqa: E402
-    extract_cards,
-    parse_deck_obj,
-    parse_decklist_text,
-)
+from lorcana_meta.decklist import parse_decklist_text  # noqa: E402
 from lorcana_meta.models import Card, Deck, DeckCard  # noqa: E402
 
 FAILURES: list[str] = []
@@ -94,32 +90,6 @@ Grab Your Sword x2
 def test_decklist_text_rejects_noise():
     cards = parse_decklist_text("Total: 60\n\n99 Nonsense Card\nab\n")
     check(not cards, f"implausible counts and stubs rejected: {cards}")
-
-
-def test_deck_obj():
-    flat = parse_deck_obj({"Mainboard": {"Elsa - Snow Queen": 4}})
-    nested = parse_deck_obj({"Mainboard": {"Elsa - Snow Queen": {"count": 4}}})
-    check(flat == nested, f"both deckObj shapes agree: {flat} vs {nested}")
-    check(flat and flat[0].count == 4, "count read")
-
-    ignored = parse_deck_obj({"Mainboard": {"A Card": 2}, "Sideboard": {"Other": 4}})
-    check(
-        [c.name for c in ignored] == ["A Card"],
-        f"sideboard bucket ignored: {ignored}",
-    )
-
-
-def test_extract_prefers_structured():
-    standing = {
-        "deckObj": {"Mainboard": {"Elsa - Snow Queen": 4}},
-        "decklist": "1 Something Else",
-    }
-    cards = extract_cards(standing)
-    check([c.name for c in cards] == ["Elsa - Snow Queen"], f"deckObj wins: {cards}")
-    check(
-        [c.name for c in extract_cards({"decklist": "2 Only Text"})] == ["Only Text"],
-        "text fallback works",
-    )
 
 
 # ------------------------------------------------------------ ink derivation
@@ -335,6 +305,45 @@ def test_empty_field_does_not_explode():
     check(report["totals"]["decks"] == 0, "zero decks reported as zero")
     check(report["pairs"] == [], "no pairs")
     check(all(row["share"] == 0.0 for row in report["inks"]), "no division by zero")
+
+
+# ------------------------------------------------------------ the event filters
+
+def test_min_players_drops_small_events_and_keeps_unknown_ones():
+    """A twelve-person Friday is a different game from a 200-player regional.
+
+    Decks whose event size is unknown are kept, on the same principle as the placing
+    cut: we do not silently discard data we cannot judge.
+    """
+    from lorcana_meta.cli import _apply_min_players
+
+    decks = [
+        Deck(source="t", deck_id="big", player="P", tournament_players=200),
+        Deck(source="t", deck_id="edge", player="P", tournament_players=32),
+        Deck(source="t", deck_id="small", player="P", tournament_players=12),
+        Deck(source="t", deck_id="unknown", player="P", tournament_players=None),
+    ]
+    kept = [d.deck_id for d in _apply_min_players(decks, 32)]
+    check(kept == ["big", "edge", "unknown"], f"32 and up, plus unknown: {kept}")
+
+    check(
+        len(_apply_min_players(decks, None)) == 4,
+        "no minimum means no filtering",
+    )
+    check(len(_apply_min_players(decks, 0)) == 4, "zero means no filtering")
+
+
+def test_top_cut_keeps_decks_with_no_recorded_placing():
+    from lorcana_meta.cli import _apply_top_cut
+
+    decks = [
+        Deck(source="t", deck_id="won", player="P", standing=1),
+        Deck(source="t", deck_id="deep", player="P", standing=40),
+        Deck(source="t", deck_id="unplaced", player="P", standing=None),
+    ]
+    kept = [d.deck_id for d in _apply_top_cut(decks, 32)]
+    check(kept == ["won", "unplaced"], f"the 40th is cut, the unknown is kept: {kept}")
+    check(len(_apply_top_cut(decks, 0)) == 3, "top 0 keeps everything")
 
 
 # --------------------------------------------------------- copy distribution

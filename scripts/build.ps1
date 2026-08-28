@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     A thin wrapper around `lorcana-meta build` that checks the things people get
-    wrong on a fresh machine: the package not installed, and TOPDECK_API_KEY not
-    set. Everything it does can be done by hand - see the README.
+    wrong on a fresh machine: the project not installed into .venv, and consent for
+    the inkdecks source not recorded. Everything it does can be done by hand - see
+    the README.
 
 .EXAMPLE
     .\scripts\build.ps1
@@ -17,7 +18,7 @@
 
 .EXAMPLE
     .\scripts\build.ps1 -Sample
-    Build from the synthetic sample field - no API key needed.
+    Build from the synthetic sample field - no permission, no network, seconds.
 #>
 [CmdletBinding()]
 param(
@@ -25,10 +26,12 @@ param(
     [int]$Top = 32,
     [ValidateSet("Core Constructed", "Infinity Constructed")]
     [string]$Format = "Core Constructed",
+    # Ignore events smaller than this. For inkdecks it filters on the listing row,
+    # so it saves the deck-page requests rather than making and discarding them.
     [int]$MinPlayers = 0,
     [double]$ClusterThreshold = 0.60,
-    [ValidateSet("topdeck", "inkdecks", "local")]
-    [string]$Source = "topdeck",
+    [ValidateSet("inkdecks", "local")]
+    [string]$Source = "inkdecks",
     # Which of inkdecks' tabs to read. Ignored by the other sources.
     [ValidateSet("core", "infinity", "poorcana", "all")]
     [string]$Category = "core",
@@ -102,17 +105,6 @@ elseif ($Source -eq "inkdecks") {
 }
 elseif ($Source -eq "local") {
     $buildArgs += @("--source", "local")
-}
-elseif ([string]::IsNullOrWhiteSpace($env:TOPDECK_API_KEY)) {
-    Write-Host ""
-    Write-Host "TOPDECK_API_KEY is not set." -ForegroundColor Yellow
-    Write-Host "  Get a free key at https://topdeck.gg/developers, then:"
-    Write-Host '    $env:TOPDECK_API_KEY = "your-key"        # this session only'
-    Write-Host '    [Environment]::SetEnvironmentVariable("TOPDECK_API_KEY", "your-key", "User")'
-    Write-Host ""
-    Write-Host "  Or build from sample data instead:  .\scripts\build.ps1 -Sample"
-    Write-Host ""
-    exit 1
 }
 
 & $python -m lorcana_meta @buildArgs

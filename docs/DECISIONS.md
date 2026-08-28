@@ -19,6 +19,10 @@ So the project was first built on **TopDeck.gg's documented API** (free key, Lor
 supported, standings with decklists, requires a visible credit). That adapter still
 exists and is the right default for anyone without permission.
 
+**TopDeck was removed in full once inkdecks became available.** Its coverage of Lorcana turned out to be too thin to build a meta reading on - it only sees events actually run on that platform - and maintaining a second source that nobody used meant a second parser, a second set of credentials and a second thing to keep working. `--source` is now `inkdecks` (default) or `local`.
+
+If you ever want it back, it is in the history: the adapter, its `deckObj` parsing in `decklist.py`, and the `--api-key` / `--min-players` flags all went together. Do not re-add it half way - the `Deck` interface is the whole contract, and a source that only fills half of it produces a report that looks complete.
+
 **Permission was then obtained**, for personal use with no commercialised public site
 built on their data. That is why `InkdecksSource` exists, why it refuses to run
 without `--inkdecks-consent` / `INKDECKS_CONSENT=1`, and why it sets
@@ -175,11 +179,58 @@ Every number here was measured, not guessed.
 | `--top` maps onto their own filter | A top-8 report fetches 8 listing pages instead of 41. |
 | One build at a time (lock file) | See below. |
 
-**cloudscraper is an opt-in fallback, not the default.** The site's pushback under
+**cloudscraper is a fallback, not the default path.** The site's pushback under
 load is `429` — a rate limit — and the answer to a rate limit is to slow down, never
 to switch HTTP client. It escalates only on a persistent `403`, and only if
 installed. inkdecks confirmed it is acceptable if needed; without that it would be
 circumventing a security control.
+
+It is installed by default all the same, as part of the `inkdecks` extra. It started life behind its own extra, and that split cost more than it saved: the fallback fires mid-run, hours into a build, and "install this and start over" is a bad thing to discover then. Installed-but-idle is the cheaper failure.
+
+### 2026-08-28: Cloudflare started blocking by client fingerprint
+
+Every Python client on the machine began getting 403 on every path, the site root
+included, while a browser on the same connection was served normally. No
+`Retry-After`, no 429 - a WAF block keyed on *what the client is*, not on address or
+rate. The Ray ID and IP were captured; the block page's own advice is to send them
+to the site owner.
+
+**cloudscraper did not help**, which corrects the earlier note in this file. It
+solves the older JavaScript challenge and still speaks Python's TLS, so it presents
+the fingerprint being refused. Tested against the live block: 403, same as plain
+`requests`.
+
+**curl_cffi does help** - it presents a real browser TLS fingerprint, and returned
+200 with the deck rows intact. After a deliberate decision by the maintainer it is
+the escalation path: `auto` tries plain HTTP, and switches only once the client has
+been refused and backing off has not helped. Which transport worked is remembered in
+the cache, so a standing block is not rediscovered at the cost of two refusals and a
+minute of backoff on every build.
+
+The grounds, recorded because they are what makes this legitimate rather than a
+technique to reuse:
+
+1. inkdecks gave written permission for automated access, personal use.
+2. They said they cannot practically allow-list an address - their side is not
+   especially technical and the work appears to be outsourced.
+3. They approved a bypass tool if one turned out to be necessary.
+4. The maintainer made the call knowingly, and it was theirs to make.
+
+Remove any one and this is circumventing a security control. **Do not carry the
+pattern into another project**, and do not widen it here.
+
+It changes the handshake, not the crawl: same two paths, same one-at-a-time pacing,
+same cache, same read-only wrapper.
+
+Which brings us to the part that was worth doing regardless. inkdecks asked that the
+crawl not disturb the site, and "it only reads" should not be a promise you verify by
+reading code. The session is now **structurally read-only**: `ReadOnlySession`
+exposes `get` and raises on `post`, `put`, `patch`, `delete` and `request`, whichever
+transport is underneath. Bytes read are counted and logged. Tests assert all of it,
+plus that every path this source can build stays clear of the `robots.txt` Disallow
+list - which is precisely their write-shaped endpoints.
+
+A related trap, hit for real: `pip install cloudscraper` in an un-activated shell installs into whichever Python is on PATH, which is not the `.venv` the build uses. The package was demonstrably installed and the build still said it was missing. The error message now names `sys.executable`, so the mismatch is visible rather than baffling.
 
 ### The concurrency mess
 
@@ -241,7 +292,7 @@ one hue at stepped opacity — an ordered scale, never hue carrying the order.
   by hand.
 - **No Cloudflare bypass by default.** See §6.
 - **No `beautifulsoup4` in the core install.** It is an `[inkdecks]` extra, so
-  TopDeck and local users carry nothing they do not use.
+  someone using only local decklists carries nothing they do not use.
 - **No regex parsing of the site's HTML structure.** bs4, matched by content.
 - **No committing of full pages from inkdecks.** Fixtures are trimmed excerpts;
   permission to read a site is not permission to redistribute it.

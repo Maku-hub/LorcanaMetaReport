@@ -8,19 +8,10 @@ new data provider is a new file here and nothing else changes.
 from .base import DeckSource, SourceError
 from .inkdecks import InkdecksSource
 from .local import LocalSource
-from .topdeck import TopdeckSource
 
 SOURCES = {
-    "topdeck": TopdeckSource,
-    "local": LocalSource,
     "inkdecks": InkdecksSource,
+    "local": LocalSource,
 }
 
-__all__ = [
-    "DeckSource",
-    "SourceError",
-    "InkdecksSource",
-    "LocalSource",
-    "TopdeckSource",
-    "SOURCES",
-]
+__all__ = ["DeckSource", "SourceError", "InkdecksSource", "LocalSource", "SOURCES"]

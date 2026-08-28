@@ -1,2 +1,4 @@
-# Runtime deps for the data pipeline. The published site itself has zero deps.
-requests>=2.32
+# Dependencies live in pyproject.toml; this file just points at them so
+# `pip install -r requirements.txt` and `pip install -e ".[inkdecks]"` can never
+# drift apart. Two lists of the same packages is how one of them goes stale.
+-e .[inkdecks]

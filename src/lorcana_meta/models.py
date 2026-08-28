@@ -51,7 +51,7 @@ class DeckCard:
 class Deck:
     """A single tournament decklist together with how it placed."""
 
-    source: str  # e.g. "topdeck.gg"
+    source: str  # e.g. "inkdecks.com"
     deck_id: str
     player: str
     cards: list[DeckCard] = field(default_factory=list)

@@ -28,7 +28,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet("topdeck", "inkdecks", "local")]
+    [ValidateSet("inkdecks", "local")]
     [string]$Source = "inkdecks",
     [string]$At = "06:30",
     [ValidateSet("", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")]

@@ -1,8 +1,9 @@
 """Generate a synthetic sample of tournament decks.
 
-Why this exists: the pipeline needs a TopDeck API key, and the site needs data to
-render. This produces a plausible-looking field so you can run everything end to
-end before you have a key, and so the tests have something deterministic to work on.
+Why this exists: the inkdecks source needs their written permission and a slow,
+polite crawl. This produces a plausible-looking field instead, so you can run the
+whole pipeline in seconds without touching anyone's server, and so the tests have
+something deterministic to work on.
 
 The card names are real (pulled from the public card database); the decks, players,
 placings and events are invented. Output goes to ``data/decks/sample-field.json``
@@ -210,7 +211,11 @@ def main() -> int:
 
     rng.shuffle(decks)
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(decks, ensure_ascii=False, indent=1), encoding="utf-8")
+    # newline="" leaves json's line endings alone. Python's text mode would rewrite
+    # them as CRLF on Windows, which .gitattributes then normalises back to LF - so
+    # the file reads as modified the instant it is written.
+    with OUT.open("w", encoding="utf-8", newline="") as handle:
+        json.dump(decks, handle, ensure_ascii=False, indent=1)
 
     pairs = len({inks for inks, _, _, _ in FIELD})
     print(

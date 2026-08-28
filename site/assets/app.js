@@ -1284,7 +1284,7 @@ async function boot() {
         <p>No report data yet.</p>
         <p class="hint">
           The report data is generated, not committed, so a fresh clone starts empty.
-          Build it with <code>.\scriptsuild.ps1 -Sample</code> on Windows, or
+          Build it with <code>.\scripts\build.ps1 -Sample</code> on Windows, or
           <code>lorcana-meta build --source local --last 40</code> elsewhere.
         </p>
         <p class="hint">Could not load <code>${DATA_URL}</code>: ${esc(error.message)}</p>

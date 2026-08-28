@@ -1,9 +1,9 @@
 """Decklist parsing.
 
-TopDeck returns a decklist either as a structured ``deckObj`` or as free text
-pasted by the player, so both shapes have to work. Every deck builder in the
-Lorcana ecosystem formats text slightly differently; the line parser below is
-deliberately forgiving and reports what it could not read instead of guessing.
+Every deck builder in the Lorcana ecosystem formats a pasted list slightly
+differently, so the line parser below is deliberately forgiving: it reports what it
+could not read rather than guessing, and a line it cannot make sense of is skipped
+rather than turned into a plausible-looking wrong card.
 """
 
 from __future__ import annotations
@@ -72,54 +72,3 @@ def parse_decklist_text(text: str) -> list[DeckCard]:
         cards[name] = cards.get(name, 0) + count
 
     return [DeckCard(name=n, count=c) for n, c in cards.items()]
-
-
-def parse_deck_obj(obj: dict) -> list[DeckCard]:
-    """Parse TopDeck's structured ``deckObj``.
-
-    Shape varies by game and import source, so accept both
-    ``{"Mainboard": {"Card": 4}}`` and ``{"Mainboard": {"Card": {"count": 4}}}``,
-    and ignore non-mainboard buckets (Lorcana has no sideboard in constructed).
-    """
-    cards: dict[str, int] = {}
-    if not isinstance(obj, dict):
-        return []
-
-    buckets = [v for k, v in obj.items() if isinstance(v, dict) and k.lower() != "sideboard"]
-    if not buckets:
-        buckets = [obj]
-
-    for bucket in buckets:
-        for name, value in bucket.items():
-            if isinstance(value, dict):
-                count = value.get("count", value.get("qty", value.get("quantity")))
-            else:
-                count = value
-            try:
-                count = int(count)
-            except (TypeError, ValueError):
-                continue
-            if 1 <= count <= 20:
-                clean = _clean_name(str(name))
-                if len(clean) >= 3:
-                    cards[clean] = cards.get(clean, 0) + count
-
-    return [DeckCard(name=n, count=c) for n, c in cards.items()]
-
-
-def extract_cards(standing: dict) -> list[DeckCard]:
-    """Pull a card list out of one TopDeck standing entry, structured shape first."""
-    for key in ("deckObj", "deckobj", "deck_obj"):
-        if isinstance(standing.get(key), dict):
-            cards = parse_deck_obj(standing[key])
-            if cards:
-                return cards
-
-    raw = standing.get("decklist")
-    if isinstance(raw, dict):
-        cards = parse_deck_obj(raw)
-        if cards:
-            return cards
-    if isinstance(raw, str):
-        return parse_decklist_text(raw)
-    return []

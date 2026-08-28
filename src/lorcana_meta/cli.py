@@ -18,7 +18,7 @@ from .analyze import build_meta
 from .cards import CardIndex
 from .console import configure_output
 from .models import Deck
-from .sources import InkdecksSource, LocalSource, SourceError, TopdeckSource
+from .sources import InkdecksSource, LocalSource, SourceError
 
 log = logging.getLogger("lorcana_meta")
 
@@ -38,17 +38,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build = sub.add_parser("build", help="fetch decks, aggregate, write site data")
     build.add_argument(
         "--source",
-        default="topdeck",
-        choices=("topdeck", "local", "inkdecks"),
-        help="where decklists come from (default: topdeck). 'inkdecks' needs their "
-        "written permission - see --inkdecks-consent",
+        default="inkdecks",
+        choices=("inkdecks", "local"),
+        help="where decklists come from. 'inkdecks' needs their written permission - "
+        "see --inkdecks-consent (default: inkdecks)",
     )
     build.add_argument(
         "--format",
         default="Core Constructed",
         dest="fmt",
-        help="Lorcana format, exactly as TopDeck spells it. Applies to the topdeck "
-        "and local sources; for inkdecks use --inkdecks-category instead "
+        help="Format label for decks that do not carry one, which in practice means "
+        "--source local. For inkdecks the format follows --inkdecks-category "
         "(default: Core Constructed)",
     )
 
@@ -68,7 +68,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--min-players",
         type=int,
         default=None,
-        help="ignore tournaments smaller than this",
+        help="ignore events smaller than this. A twelve-person Friday night is a "
+        "different game from a 200-player regional. Decks whose event size is unknown "
+        "are kept",
     )
     build.add_argument(
         "--min-pair-decks",
@@ -111,11 +113,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     inkdecks.add_argument(
         "--inkdecks-scraper",
         default="auto",
-        choices=("auto", "plain", "cloudscraper"),
+        choices=("auto", "plain", "curl_cffi"),
         dest="inkdecks_transport",
-        help="how to make the requests. 'auto' uses plain HTTP and only escalates to "
-        "cloudscraper if the site blocks it; 'plain' never escalates; 'cloudscraper' "
-        "starts there. Needs pip install -e '.[cloudscraper]' (default: auto)",
+        help="how to make the requests. 'auto' uses plain HTTP and escalates to "
+        "curl_cffi only if the site refuses the client; 'plain' never escalates; "
+        "'curl_cffi' starts there. Whichever worked is remembered (default: auto)",
     )
     inkdecks.add_argument(
         "--inkdecks-max-decks",
@@ -134,11 +136,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--out",
         default="site/data/meta.json",
         help="where to write the report (default: site/data/meta.json)",
-    )
-    build.add_argument(
-        "--api-key",
-        default=None,
-        help="TopDeck API key; defaults to the TOPDECK_API_KEY environment variable",
     )
     build.add_argument(
         "--refresh-cards", action="store_true", help="re-download the card database"
@@ -191,8 +188,11 @@ def _build_source(args: argparse.Namespace):
             delay=args.inkdecks_delay,
             max_decks=args.inkdecks_max_decks,
             transport=args.inkdecks_transport,
+            # Attendance is on the listing row, so this filters before any deck page
+            # is fetched - it saves requests rather than wasting them.
+            min_players=args.min_players,
         )
-    return TopdeckSource(args.api_key, fmt=args.fmt, min_players=args.min_players)
+    raise SourceError(f"Unknown source {args.source!r}")
 
 
 def _apply_top_cut(decks: list[Deck], top: int) -> list[Deck]:
@@ -200,6 +200,21 @@ def _apply_top_cut(decks: list[Deck], top: int) -> list[Deck]:
     if not top:
         return decks
     return [d for d in decks if d.standing is None or d.standing <= top]
+
+
+def _apply_min_players(decks: list[Deck], minimum: int | None) -> list[Deck]:
+    """Drop decks from events smaller than `minimum` players.
+
+    A twelve-person Friday night is a different game from a 200-player regional, and
+    mixing them flattens the meta towards whatever the locals happen to brew. This is
+    the filter that says "only real events".
+
+    A deck whose event size is unknown is kept, on the same principle as the placing
+    cut: we do not silently discard data we cannot judge.
+    """
+    if not minimum:
+        return decks
+    return [d for d in decks if d.tournament_players is None or d.tournament_players >= minimum]
 
 
 def _drop_thin_pairs(report: dict, minimum: int) -> dict:
@@ -247,6 +262,19 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     decks = _apply_top_cut(decks, args.top)
     log.info("%d decklists after the top-%s cut", len(decks), args.top or "all")
+
+    # A source may already have filtered this out - inkdecks does, before fetching -
+    # so this is the backstop that makes the rule hold for every source.
+    if args.min_players:
+        before = len(decks)
+        decks = _apply_min_players(decks, args.min_players)
+        if before != len(decks):
+            log.info(
+                "%d decklists after dropping events under %d players (%d removed)",
+                len(decks),
+                args.min_players,
+                before - len(decks),
+            )
 
     index = CardIndex.load(refresh=args.refresh_cards)
     log.info("card database: %d printings", len(index))

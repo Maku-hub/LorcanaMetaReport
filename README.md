@@ -88,13 +88,14 @@ python -m pip install -e .
 That writes `report.html`. Double-click it — no server, no hosting, nothing leaves
 your machine.
 
-With real data, once you have a [free TopDeck key](https://topdeck.gg/developers):
+With real data from [inkdecks.com](https://inkdecks.com/) — which needs their written
+permission, see below:
 
 ```powershell
-$env:TOPDECK_API_KEY = "your-key"                                        # this session
-[Environment]::SetEnvironmentVariable("TOPDECK_API_KEY", "your-key", "User")  # permanently
+$env:INKDECKS_CONSENT = "1"                                             # this window
+[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")  # from now on
 
-.\scripts\build.ps1 -Days 30 -Top 32 -Bundle
+.\scripts\build.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
 ```
 
 `.\scripts\serve.ps1` previews the multi-file version in a browser instead.
@@ -164,7 +165,7 @@ your current session still refuses.
 
 ```powershell
 # Top 32 of the last two weeks, Core Constructed
-.\scriptsuild.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
+.\scripts\build.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
 ```
 
 `-Category` picks which of the site's tabs to read — `core` (the default),
@@ -220,7 +221,7 @@ Get-ScheduledTaskInfo -TaskName LorcanaMetaReport  # last result
 | The current meta, enough decks to trust | `-Days 30 -Top 32` |
 | What is winning, not just what is played | `-Days 45 -Top 8` |
 | A quick look, few requests | `-Days 7 -Top 8` |
-| Only serious events | add `-MinPlayers 32` |
+| Only serious events | add `-MinPlayers 32` — on a real window this cut 128 of 258 decks, and skipped those requests entirely |
 | A different format | add `-Category infinity` (or `poorcana`, or `all`) |
 
 Under about 60 decks the percentages move a lot, and the report says so on its own
@@ -270,8 +271,6 @@ without one.
 If a public report is what you want:
 
 1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-2. **Settings → Secrets and variables → Actions → New repository secret**, named
-   `TOPDECK_API_KEY`.
 
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml) then rebuilds daily
 at 05:20 UTC and deploys `site/`. You can also run it by hand from the Actions tab
@@ -296,17 +295,16 @@ lorcana-meta build [options]
 
 | Option | Default | What it does |
 |---|---|---|
-| `--source {topdeck,inkdecks,local}` | `topdeck` | Where decklists come from. |
-| `--format` | `Core Constructed` | Lorcana format, exactly as TopDeck spells it. |
+| `--source {inkdecks,local}` | `inkdecks` | Where decklists come from. |
+| `--format` | `Core Constructed` | Format label for decks that do not carry one — in practice `--source local`. |
 | `--last N` | `30` | Days back from today. |
 | `--start` / `--end` | – | Explicit window, `YYYY-MM-DD`. Overrides `--last`. |
 | `--top N` | `32` | Keep finishes this high or better. `0` keeps everything. |
-| `--min-players N` | – | Ignore events smaller than this. |
+| `--min-players N` | – | Ignore events smaller than this. For inkdecks it filters on the listing row, so it skips those deck-page requests rather than making and discarding them. Decks whose event size is unknown are kept. |
 | `--min-pair-decks N` | `3` | Drop ink pairs thinner than this as noise. The report still says how many decks that removed. |
 | `--cluster-threshold F` | `0.60` | Card overlap that counts as the same archetype. Lower merges more, higher splits more. |
 | `--local-dir` | `data/decks` | Where `--source local` reads from. |
 | `--out` | `site/data/meta.json` | Where the report goes. |
-| `--api-key` | `$TOPDECK_API_KEY` | TopDeck credentials. |
 | `--refresh-cards` | – | Re-download the card database instead of using the 24h cache. |
 | `--indent N` | – | Pretty-print the JSON. |
 
@@ -318,7 +316,7 @@ inkdecks-only options (they do nothing for the other sources):
 | `--inkdecks-consent` | – | Confirm you have their written permission. Required. |
 | `--inkdecks-delay F` | `3.0` | Seconds between requests. Grows on a 429, never shrinks within a run. |
 | `--inkdecks-max-decks N` | `1500` | Stop after this many decks, best-placed first. |
-| `--inkdecks-scraper` | `auto` | `auto` escalates to cloudscraper only on a persistent 403; `plain` never does; `cloudscraper` starts there. |
+| `--inkdecks-scraper` | `auto` | `auto` escalates to curl_cffi only once the client is refused; `plain` never does; `curl_cffi` starts there. Whichever worked is remembered. |
 
 Examples:
 
@@ -343,19 +341,13 @@ common cases.
 
 ## Data sources
 
-- **Tournament data:** [TopDeck.gg API v2](https://topdeck.gg/docs/tournaments-v2) —
-  free key, documented, supports Disney Lorcana (Core Constructed, Infinity
-  Constructed, Sealed, Pack Rush), returns standings with decklists filtered by date
-  range. Rate limit ~100 req/min; this project makes one request per month of the
-  window. **Using the API requires a visible credit and link back to TopDeck.gg** —
-  the report renders it in the footer. Don't remove it.
+- **inkdecks.com** (`--source inkdecks`, the default) — the widest tournament coverage
+  there is, and the reason the archetype clustering earns its keep. Needs their
+  written permission; see below.
 - **Card data:** [lorcana-api.com](https://lorcana-api.com/) — free, open source, no
   key. One bulk endpoint, cached locally for 24 hours. Supplies card text, cost,
   ink(s), type and the official card images.
-- **inkdecks.com:** `--source inkdecks`, and only with their written permission —
-  see below. The widest tournament coverage there is, and the reason the archetype
-  clustering earns its keep.
-- **Your own files:** `--source local` reads `data/decks/*.{json,txt}`. Good for local
+- **Your own files** (`--source local`) reads `data/decks/*.{json,txt}`. Good for local
   events no platform covers, and for anything you copied by hand. Format:
   [`data/decks/README.md`](data/decks/README.md).
 
@@ -402,15 +394,74 @@ top-32 (~800 decks) is a few hours the first time. Runs resume from the cache an
 fetch best-placed first, so stopping and continuing later is a supported way to work
 rather than a lost run.
 
-**On Cloudflare and cloudscraper.** Their bot filter rejects any unrecognised
-User-Agent, so the source sends a plain browser string — set `INKDECKS_USER_AGENT` if
-they ask you to identify differently. What the site actually pushes back with under
-load is `429`, a rate limit, and the answer to a rate limit is to slow down, never to
-switch HTTP client. `--inkdecks-scraper` therefore defaults to `auto`: plain requests,
-escalating to [cloudscraper](https://pypi.org/project/cloudscraper/) only on a
-persistent `403` and only if you installed it (`pip install -e ".[cloudscraper]"`).
-inkdecks confirmed cloudscraper is acceptable if needed; without that it would be
-circumventing a security control, which is not a call to make on your own judgement.
+**On Cloudflare.** The site sits behind rules that treat `429` and `403` as two
+different problems, and so does this:
+
+`429` is a rate limit. The answer is to slow down — the delay widens, eases after a
+clean stretch, and is remembered between runs. Never to switch client.
+
+`403` is a block on *what the client is*. Measured directly: a browser on this
+machine is served normally while every Python client on the same connection is
+refused on every path, the site root included — no `Retry-After`, no `429`. That is
+a WAF rule keyed on TLS fingerprint, not on address or rate.
+[cloudscraper](https://pypi.org/project/cloudscraper/) does not solve it and was
+removed: it handles the older JavaScript challenge but still speaks Python's TLS, so
+it presents the fingerprint being refused (tested against the live block: `403`).
+[curl_cffi](https://pypi.org/project/curl-cffi/) does solve it, by presenting a real
+browser's TLS fingerprint.
+
+`--inkdecks-scraper` therefore defaults to `auto`: plain HTTP first, escalating to
+curl_cffi only once the plain path has been refused and backing off has not helped.
+Whichever worked is remembered, so the next run does not re-earn the same refusals.
+
+Using it is impersonation, so the grounds are worth stating: inkdecks gave written
+permission for automated access, said they cannot practically allow-list an address,
+and approved a bypass tool if one proved necessary. Remove any of those and this
+would be circumventing a security control rather than exercising an agreement — not
+a pattern to copy elsewhere.
+
+It changes the handshake, not the crawl: same two paths, same one-at-a-time pacing,
+same read-only wrapper.
+
+### How the reading actually works
+
+Two request shapes, and nothing else.
+
+```
+1. listing page        /lorcana-decks/core?deck_type=tournament&rank=top32
+                        &start_date=...&end_date=...&page=N
+   -> one row per deck: placing, W-L-D, player, deck name, inks, archetype label,
+      event, attendance, date, and the link to the deck
+   -> repeated for each page, until the pager runs out
+
+2. deck page           /lorcana-metagame/deck-<slug>-<id>
+   -> <table id="decklist">, one <tr class="card-list-item"> per card,
+      quantity in data-quantity, the card in a link to its details page
+```
+
+Everything else follows from those two:
+
+- **Parsed by content, not position.** Fields are found by what they contain — a
+  date-shaped string, an `N Players` match, an ink symbol's `alt` — never by column
+  index. A positional parser reacts to a layout change by reading the price column
+  as a placing: wrong numbers, no error.
+- **Cached by immutability.** A published decklist never changes, so deck pages are
+  cached forever and a rebuild only fetches what is new. Listing pages get an hour,
+  since events keep being added.
+- **One request at a time**, with a gap that widens on a 429 and eases back after a
+  clean stretch. A lock file stops two builds running at once, because "one at a
+  time" only ever held inside a single process.
+- **Read-only by construction.** The session wrapper exposes `get` and raises on
+  `post`, `put`, `patch`, `delete` and `request`. No forms, no logins, no images, no
+  assets — HTML in, parsed, cached, done. Bytes read are counted and logged.
+- **Only paths their `robots.txt` allows.** The write-shaped endpoints it disallows
+  (`/decksubmissions`, `/suggestions/add`) are unreachable from here, and a test
+  checks every path the source can build against that list.
+
+Roughly 130 KB per deck page and 245 KB per listing page, so a full two-week top-32
+window is around 50 MB — once. After that the cache carries it and a refresh costs
+a handful of requests.
+
 
 ### Copying lists by hand
 
@@ -451,12 +502,11 @@ recognises it as importer input and refuses to read it as one giant deck.
 src/lorcana_meta/
   cli.py          argument parsing, the build command
   sources/
-    topdeck.py    TopDeck.gg API adapter (rate limiting, retries, attribution)
     inkdecks.py   inkdecks.com scraper: consent gate, adaptive throttle, caching
     local.py      decklists from data/decks/*.{json,txt}
     base.py       the one interface a new source has to satisfy
   cards.py        card database + the name folding that makes lists match
-  decklist.py     parsing pasted lists and TopDeck's structured deckObj
+  decklist.py     parsing pasted decklists, forgivingly
   cluster.py      archetype detection by card overlap
   analyze.py      shares, inclusion rates, expected copies
   console.py      UTF-8 output on a legacy Windows code page

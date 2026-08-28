@@ -2,7 +2,7 @@
 
 Reads decks from files you control - your own tournament notes, lists a friend
 sent you, or lists you are allowed to redistribute. Useful for two things: running
-the whole pipeline before you have an API key, and mixing local events that no
+the whole pipeline without touching a remote source, and mixing local events no
 online platform covers into the published meta.
 
 Two file shapes are accepted in ``data/decks/``:

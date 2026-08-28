@@ -55,8 +55,20 @@ display only. See `src/lorcana_meta/cluster.py`.
 **Copy counts report the mode and the full spread, not just the mean.** A mean of
 2.40 hides that 28 of 43 lists run exactly 2.
 
-**A 429 is not a 403.** A rate limit is answered by slowing down, never by switching
-HTTP client. cloudscraper stays an opt-in fallback for a persistent 403 only.
+**A 429 is not a 403, and they get opposite answers.** A rate limit means slow down —
+the delay widens, eases after a clean stretch, and is remembered. A 403 from this
+site means the *client* is refused: since 2026-08-28 their Cloudflare blocks by TLS
+fingerprint, so every Python client gets 403 on every path while a browser on the
+same connection is fine. `auto` escalates to curl_cffi for that case only, and
+remembers it. Never answer a 429 by switching transport.
+
+**curl_cffi is impersonation, and it rests on permission, not on convenience.**
+inkdecks gave written consent for automated access, said they cannot practically
+allow-list an address, and approved a bypass tool if needed. Do not carry this
+pattern into another project, and do not widen it here. See `docs/DECISIONS.md`.
+
+**The inkdecks session is read-only by construction.** `ReadOnlySession` allows
+`get` and raises on anything that could write. Do not unwrap it.
 
 ## Windows specifics that have already caused bugs
 

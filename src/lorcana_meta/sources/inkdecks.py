@@ -51,31 +51,49 @@ be counted per session, so re-presenting one looks like a single visitor hammeri
 the site. Each request is therefore sent without cookies - which is simply what a
 plain HTTP client does by default - and slowly.
 
-## If the plain path stops working
+## What this does to the site
 
-inkdecks said they cannot easily allow-list an address and that cloudscraper is
-acceptable if it turns out to be needed. So there is a fallback, and it is off by
-default, because the plain path works: what the site actually pushes back with is
-429 (a rate limit), not 403, and the answer to a rate limit is to slow down. A real
-20-deck run saw six 429s at a 2s delay and none once the adaptive throttle had
-stretched it; cloudscraper would not have helped with any of them.
+Nothing, by construction. The session is wrapped so only ``get`` is reachable -
+``post``, ``put``, ``patch``, ``delete`` and ``request`` raise instead. Two path
+shapes are ever requested, both allowed by ``robots.txt``, and the write-shaped
+paths it disallows (``/decksubmissions``, ``/suggestions/add``) are unreachable from
+here. No forms, no logins, no images, no assets: HTML in, parsed, cached, done. The
+bytes pulled are counted and logged, so the footprint is reported rather than
+guessed at.
 
-``--inkdecks-scraper``:
+## When Cloudflare blocks the client rather than the address
 
-* ``auto`` (default) - plain ``requests``; switch to cloudscraper only after the
-  backoff has failed, and only if it is installed.
-* ``plain`` - never switch. Fails loudly instead, which is what you want if you
-  would rather know the site changed.
-* ``cloudscraper`` - use it from the first request.
+Measured on 2026-08-28: every Python client on this machine got 403 on every path,
+the site root included, while a browser on the same connection was served normally.
+No ``Retry-After``, no 429 - a WAF block keyed on what the client *is*, not on where
+it comes from or how fast it asks.
 
-Installing it is opt-in: ``python -m pip install -e ".[cloudscraper]"``.
-Keeping it out of the default install matters - it is a heavy dependency that
-solves a problem you probably do not have, and reaching for it first would hide
-the far more likely explanation that a parser or a filter broke.
+cloudscraper does not solve that, and was removed. It handles the older JavaScript
+challenge but still speaks Python's TLS, so it presents the very fingerprint being
+refused; tried against the real block it returned 403 exactly like plain
+``requests``. Keeping it as a "fallback" would only have meant a slower way to fail.
 
-This fallback rests on the site owner's say-so. Without that it would be
-circumventing a security control, which is not something to do on your own
-judgement.
+``curl_cffi`` does solve it, by presenting a real browser's TLS fingerprint.
+Verified against the live block: 200, with the deck rows intact.
+
+That is impersonation, so the grounds for it belong in writing:
+
+* inkdecks gave written permission for automated access, personal use.
+* They said they cannot practically allow-list an address - their side is not
+  especially technical and this appears to be outsourced.
+* They approved using a bypass tool if one turned out to be necessary.
+* The maintainer of this project made the call knowingly.
+
+Remove any one of those and this is circumventing a security control rather than
+exercising an agreement. It is not a pattern to copy into another project.
+
+What it does **not** change is the footprint: same two paths, same one-at-a-time
+pacing, same read-only wrapper. A different TLS handshake, not a different crawl.
+
+``--inkdecks-scraper``: ``auto`` (plain, escalating to curl_cffi once the plain path
+is refused and backing off has not helped), ``plain``, or ``curl_cffi``. Which one
+worked is remembered in the cache, so the next run starts where the last ended up.
+
 """
 
 from __future__ import annotations
@@ -143,7 +161,10 @@ MAX_CONSECUTIVE_FAILURES = 8
 LOCK_STALE_AFTER = 120.0
 LIST_CACHE_TTL = 3600  # list pages change as events are added; deck pages never do
 #: How the HTTP requests are made. See the module docstring.
-TRANSPORTS = ("auto", "plain", "cloudscraper")
+TRANSPORTS = ("auto", "plain", "curl_cffi")
+#: Which browser curl_cffi presents itself as. Pinned so a library update cannot
+#: silently change what the site sees.
+IMPERSONATE = "chrome"
 
 _ORDINAL = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
 _BUCKET = re.compile(r"^top\s*(\d+)$", re.IGNORECASE)
@@ -191,37 +212,89 @@ def parse_standing(text: str) -> tuple[int | None, str]:
     return None, label
 
 
-def _plain_session(headers: dict) -> requests.Session:
+class ReadOnlySession:
+    """A session that can only ever issue GET.
+
+    inkdecks asked that this not disturb their site. A reader cannot: we request
+    pages and parse them. But "we only read" should be a property of the code rather
+    than a promise you verify by reading it, so the real session is wrapped and
+    nothing but ``get`` is reachable. A future edit that reaches for ``.post()``
+    raises here instead of submitting something.
+
+    Their ``robots.txt`` disallows exactly the write-shaped paths
+    (``/decksubmissions``, ``/suggestions/add``). Those are unreachable from here
+    anyway: every request goes through ``_get`` with one of two hard-coded shapes.
+    """
+
+    #: Anything that could change state on the far end.
+    _FORBIDDEN = ("post", "put", "patch", "delete", "request")
+
+    def __init__(self, session, label: str) -> None:
+        self._session = session
+        self.label = label
+        #: Bytes pulled, so the footprint can be reported rather than guessed.
+        self.bytes_read = 0
+
+    def get(self, url: str, **kwargs):
+        response = self._session.get(url, **kwargs)
+        self.bytes_read += len(response.content or b"")
+        return response
+
+    def __getattr__(self, name: str):
+        if name in self._FORBIDDEN:
+            raise SourceError(
+                f"This source is read-only; {name}() is not available. It reads "
+                "public pages and parses them - it never submits anything."
+            )
+        return getattr(self._session, name)
+
+
+def _plain_session(headers: dict) -> ReadOnlySession:
     session = requests.Session()
     session.headers.update(headers)
-    return session
+    return ReadOnlySession(session, "plain")
 
 
-def _cloudscraper_session(headers: dict):
-    """A cloudscraper session, which quacks like requests.Session.
+def _impersonating_session(headers: dict) -> ReadOnlySession:
+    """A session whose TLS fingerprint matches a real browser.
 
-    Only reachable once the plain path has demonstrably failed, or when asked for
-    explicitly - see the module docstring on why it is not the default.
+    Needed because the site's Cloudflare rules key on what the client *is*: a browser
+    on this machine is served normally while every Python client on the same
+    connection gets 403 on every path. See the module docstring for why using this is
+    an agreement being exercised rather than a control being circumvented.
+
+    Still wrapped in ReadOnlySession, so the read-only guarantee does not depend on
+    which transport is in play.
     """
     try:
-        import cloudscraper
-    except ImportError as error:
+        from curl_cffi import requests as curl_requests
+    except ModuleNotFoundError as error:
+        # Name the interpreter. "pip install curl_cffi" in an un-activated shell lands
+        # in whichever Python is on PATH, which is usually not this venv - and then
+        # the package is demonstrably installed and still not importable here.
         raise SourceError(
             "\n".join(
                 [
-                    "inkdecks blocked the plain requests path, and cloudscraper is not "
-                    "installed.",
-                    '  Install it:  python -m pip install -e ".[cloudscraper]"',
-                    "  Then re-run - nothing already cached is refetched.",
-                    "  inkdecks confirmed this is acceptable; it is not a workaround you "
-                    "should reach for without that.",
+                    "inkdecks blocked the plain HTTP path, and curl_cffi is not "
+                    "installed for the interpreter running this build:",
+                    f"    {sys.executable}",
+                    "  Install it there:",
+                    f'    "{sys.executable}" -m pip install -e ".[inkdecks]"',
+                    "  or re-run scripts/setup.ps1, which installs into .venv.",
                 ]
             )
         ) from error
+    except ImportError as error:
+        # Installed but its own import failed. Saying "not installed" here would send
+        # you to reinstall something that is already there.
+        raise SourceError(
+            f"curl_cffi is installed but failed to import: {error}\n"
+            f'  Try: "{sys.executable}" -m pip install --force-reinstall curl_cffi'
+        ) from error
 
-    session = cloudscraper.create_scraper()
+    session = curl_requests.Session(impersonate=IMPERSONATE)
     session.headers.update(headers)
-    return session
+    return ReadOnlySession(session, "curl_cffi")
 
 
 class InkdecksSource:
@@ -240,6 +313,7 @@ class InkdecksSource:
         delay: float = DEFAULT_DELAY,
         cache_dir: Path | str = ".cache/inkdecks",
         max_decks: int | None = 1500,
+        min_players: int | None = None,
         user_agent: str | None = None,
         transport: str = "auto",
         timeout: int = 45,
@@ -278,6 +352,7 @@ class InkdecksSource:
         #: Decks the site refused. Reported rather than silently missing from the field.
         self.skipped: list[str] = []
         self.max_decks = max_decks
+        self.min_players = min_players
         self.timeout = timeout
         self.transport = transport
         self._last_request = 0.0
@@ -289,12 +364,16 @@ class InkdecksSource:
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-        self._using_cloudscraper = transport == "cloudscraper"
-        self._session = (
-            _cloudscraper_session(self._headers)
-            if self._using_cloudscraper
-            else _plain_session(self._headers)
-        )
+        # Start on whatever the last run needed. Rediscovering a standing block from
+        # scratch costs two refusals and a minute of backoff on every build, for an
+        # answer the cache already has - the same reasoning as the remembered delay.
+        remembered = self._load_transport()
+        if transport == "curl_cffi" or (transport == "auto" and remembered == "curl_cffi"):
+            if transport == "auto":
+                log.info("inkdecks: starting on curl_cffi, which is what worked last time")
+            self._session = _impersonating_session(self._headers)
+        else:
+            self._session = _plain_session(self._headers)
 
     # -- fetching --------------------------------------------------------------
 
@@ -308,6 +387,24 @@ class InkdecksSource:
     def _fetch(self, start: date, end: date) -> list[Deck]:
         stubs = self._fetch_index(start, end)
         log.info("inkdecks: %d decks listed for %s .. %s", len(stubs), start, end)
+
+        # Attendance is already on the listing row, so a size filter costs nothing and
+        # saves a deck-page request for everything it excludes. Doing it here rather
+        # than after the fetch is the difference between skipping 200 requests and
+        # making them and throwing the results away.
+        if self.min_players:
+            before = len(stubs)
+            stubs = [
+                s for s in stubs if s.get("players") is None or s["players"] >= self.min_players
+            ]
+            if before != len(stubs):
+                log.info(
+                    "inkdecks: %d of %d decks are from events under %d players - "
+                    "not fetching them",
+                    before - len(stubs),
+                    before,
+                    self.min_players,
+                )
 
         # Always best-placed first, not only when trimming. The site's rate limit is
         # tight enough that a large window is realistically built over more than one
@@ -359,6 +456,10 @@ class InkdecksSource:
             decks.append(self._to_deck(stub, cards))
             if position % 25 == 0 or position == len(stubs):
                 log.info("inkdecks: %d/%d decklists read", position, len(stubs))
+
+        read = getattr(self._session, "bytes_read", 0)
+        if read:
+            log.info("inkdecks: %.1f MB read this run", read / (1024 * 1024))
 
         if self.skipped:
             log.warning(
@@ -512,13 +613,13 @@ class InkdecksSource:
                     time.sleep(backoff)
                     continue
 
-                if self.transport == "auto" and not self._using_cloudscraper:
+                if self.transport == "auto" and self._session.label == "plain":
                     log.warning(
-                        "inkdecks: still blocked after backing off - switching to "
-                        "cloudscraper for the rest of this run"
+                        "inkdecks: still refused after backing off, so this is a block "
+                        "on the client rather than the rate - switching to curl_cffi"
                     )
-                    self._session = _cloudscraper_session(self._headers)
-                    self._using_cloudscraper = True
+                    self._session = _impersonating_session(self._headers)
+                    self._save_transport("curl_cffi")
                     return self._get(
                         path, params=params, cache_ttl=cache_ttl, cache_key=cache_key
                     )
@@ -564,6 +665,26 @@ class InkdecksSource:
     #
     # Without this, every run starts at the configured delay and re-earns the same
     # 429s before settling. A daily rebuild would collect them every morning.
+
+    def _transport_path(self) -> Path:
+        return self.cache_dir / "transport.json"
+
+    def _load_transport(self) -> str:
+        """Which transport last got through. Defaults to the polite one."""
+        try:
+            name = json.loads(self._transport_path().read_text("utf-8"))["transport"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return "plain"
+        return name if name in TRANSPORTS else "plain"
+
+    def _save_transport(self, name: str) -> None:
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self._transport_path().write_text(
+                json.dumps({"transport": name}), encoding="utf-8"
+            )
+        except OSError:
+            pass  # a cache we cannot write is not worth failing a build over
 
     def _throttle_path(self) -> Path:
         return self.cache_dir / "throttle.json"
@@ -613,15 +734,17 @@ class InkdecksSource:
         lines.append(
             "  Nothing already cached is refetched, so a re-run resumes where this stopped."
         )
-        if self._using_cloudscraper:
+        if self._session.label == "curl_cffi":
             lines.append(
-                "  cloudscraper did not get through either, so this looks like a real "
-                "change on their side rather than a rate problem. Worth asking them."
+                "  curl_cffi did not get through either. A browser fingerprint is "
+                "already being presented, so this is more likely a real change on "
+                "their side than a client-fingerprint block. Worth asking them, with "
+                "the CF-RAY id from the response."
             )
         elif self.transport == "plain":
             lines.append(
                 "  --inkdecks-scraper plain is set, so no fallback was tried. Drop that "
-                "flag to let it escalate to cloudscraper."
+                "flag to let it escalate to curl_cffi."
             )
         return "\n".join(lines)
 

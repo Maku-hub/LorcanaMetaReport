@@ -13,7 +13,7 @@ class SourceError(RuntimeError):
 class DeckSource(Protocol):
     """Everything a deck provider has to offer."""
 
-    #: Short identifier stamped onto every deck, e.g. ``"topdeck.gg"``.
+    #: Short identifier stamped onto every deck, e.g. ``"inkdecks.com"``.
     name: str
     #: Human-readable credit rendered in the site footer.
     attribution: str

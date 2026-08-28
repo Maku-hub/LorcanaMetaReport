@@ -11,15 +11,16 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["requests>=2.32"]
 
-# HTML parsing is only needed by the inkdecks source, so it stays out of the core
-# install. Regex-parsing a real website's markup is how you get silently wrong
-# numbers when its layout shifts.
+# Everything the inkdecks source needs. Kept out of the core install so someone
+# using only local decklists does not pull in an HTML parser and a bot-filter client.
+#
+# curl_cffi lives here rather than behind its own extra because the fallback fires
+# mid-run, hours into a build, and "install this and start over" is a bad thing to
+# discover then. Installed-but-idle is the cheaper failure. It is only *used* when
+# the site refuses the plain path - see sources/inkdecks.py for why that is an
+# agreement being exercised rather than a control being circumvented.
 [project.optional-dependencies]
-inkdecks = ["beautifulsoup4>=4.12"]
-# Only needed if inkdecks' bot filter starts refusing plain HTTP requests. Their
-# operators confirmed it is acceptable; it stays opt-in because the plain path works
-# and because reaching for it first hides more likely explanations.
-cloudscraper = ["beautifulsoup4>=4.12", "cloudscraper>=1.2.71"]
+inkdecks = ["beautifulsoup4>=4.12", "curl_cffi>=0.7"]
 
 [project.urls]
 Source = "https://github.com/"

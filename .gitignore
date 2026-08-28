@@ -24,3 +24,11 @@ venv/
 #
 # Regenerate in seconds:  .\scriptsuild.ps1 -Sample
 site/data/meta.json
+
+# The synthetic sample field. Generated, and its dates are relative to "today", so it
+# shows up as modified every day and after every build - 110 KB of pure noise in
+# `git status`. Nothing depends on a committed copy: CI regenerates it, and so does
+# the documented first command.
+#
+# Regenerate:  .\scriptsuild.ps1 -Sample     (or python tools/generate_sample_decks.py)
+data/decks/sample-field.json

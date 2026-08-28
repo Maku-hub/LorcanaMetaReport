@@ -2,7 +2,7 @@
 
 Drop decklists here and build with `--source local`. Useful for two things:
 
-- running the whole pipeline before you have a TopDeck API key, and
+- running the whole pipeline without crawling anyone's site, and
 - mixing in local events that no online platform covers.
 
 Only `.json` and `.txt` files are read, so this README is ignored.
