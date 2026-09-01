@@ -587,16 +587,6 @@ td.name {
   color: var(--bar);
 }
 
-.badge--own {
-  border-color: color-mix(in srgb, var(--good) 55%, transparent);
-  color: var(--good);
-}
-
-.badge--gap {
-  border-color: color-mix(in srgb, var(--critical) 55%, transparent);
-  color: var(--critical);
-}
-
 /* -------------------------------------------------------------- tooltip */
 
 .tooltip {
@@ -690,20 +680,6 @@ td.name {
   gap: 6px;
   flex-wrap: wrap;
   margin-top: 8px;
-}
-
-/* ----------------------------------------------------------- prep tools */
-
-textarea {
-  width: 100%;
-  min-height: 190px;
-  resize: vertical;
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .hint {

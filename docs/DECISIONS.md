@@ -179,13 +179,9 @@ Every number here was measured, not guessed.
 | `--top` maps onto their own filter | A top-8 report fetches 8 listing pages instead of 41. |
 | One build at a time (lock file) | See below. |
 
-**cloudscraper is a fallback, not the default path.** The site's pushback under
-load is `429` — a rate limit — and the answer to a rate limit is to slow down, never
-to switch HTTP client. It escalates only on a persistent `403`, and only if
-installed. inkdecks confirmed it is acceptable if needed; without that it would be
-circumventing a security control.
-
-It is installed by default all the same, as part of the `inkdecks` extra. It started life behind its own extra, and that split cost more than it saved: the fallback fires mid-run, hours into a build, and "install this and start over" is a bad thing to discover then. Installed-but-idle is the cheaper failure.
+**A 429 and a 403 get opposite answers.** The site's pushback under load is `429` — a
+rate limit — and the answer is to slow down, never to switch HTTP client. A `403` is
+a different problem entirely; see the next section for how that one resolved.
 
 ### 2026-08-28: Cloudflare started blocking by client fingerprint
 
@@ -202,10 +198,14 @@ the fingerprint being refused. Tested against the live block: 403, same as plain
 
 **curl_cffi does help** - it presents a real browser TLS fingerprint, and returned
 200 with the deck rows intact. After a deliberate decision by the maintainer it is
-the escalation path: `auto` tries plain HTTP, and switches only once the client has
-been refused and backing off has not helped. Which transport worked is remembered in
-the cache, so a standing block is not rediscovered at the cost of two refusals and a
-minute of backoff on every build.
+now the **only** transport.
+
+It was briefly a fallback, with plain HTTP first and escalation on a persistent 403,
+plus a remembered-transport cache file so a standing block was not rediscovered every
+run. That worked and was still the wrong shape: every run began by earning two 403s
+and a minute of backoff, and it cost a transport switch, a cache file and a branch in
+the retry loop to manage a choice that only ever had one right answer. One client
+that works beats two clients and the machinery to pick between them.
 
 The grounds, recorded because they are what makes this legitimate rather than a
 technique to reuse:
@@ -230,7 +230,16 @@ transport is underneath. Bytes read are counted and logged. Tests assert all of 
 plus that every path this source can build stays clear of the `robots.txt` Disallow
 list - which is precisely their write-shaped endpoints.
 
-A related trap, hit for real: `pip install cloudscraper` in an un-activated shell installs into whichever Python is on PATH, which is not the `.venv` the build uses. The package was demonstrably installed and the build still said it was missing. The error message now names `sys.executable`, so the mismatch is visible rather than baffling.
+Two related traps, both hit for real:
+
+- `pip install <anything>` in an un-activated shell installs into whichever Python is
+  on PATH, not the `.venv` the build uses. The package was demonstrably installed and
+  the build still said it was missing. The error message now names `sys.executable`,
+  so the mismatch is visible rather than baffling.
+- The HTTP client and the HTML parser lived in an `[inkdecks]` extra while the
+  documented install was `pip install -e .`. That quietly produced an installation
+  that could not read the default source. **There are no extras now** — one dependency
+  list, and the documented command installs all of it.
 
 ### The concurrency mess
 
@@ -290,9 +299,12 @@ one hue at stepped opacity — an ordered scale, never hue carrying the order.
 
 - **No scraping of any site whose terms forbid it without permission.** Ask, or copy
   by hand.
-- **No Cloudflare bypass by default.** See §6.
-- **No `beautifulsoup4` in the core install.** It is an `[inkdecks]` extra, so
-  someone using only local decklists carries nothing they do not use.
+- **No Cloudflare bypass anywhere else.** See §6 for the four conditions that make it
+  legitimate here and nowhere else.
+- **No optional-dependency extras.** One list. An extra that the documented install
+  command did not include is worse than a slightly larger install.
+- **No wrapper scripts.** There were four PowerShell ones; they duplicated the CLI,
+  drifted from it, and doubled the surface to keep working. One way to run it.
 - **No regex parsing of the site's HTML structure.** bs4, matched by content.
 - **No committing of full pages from inkdecks.** Fixtures are trimmed excerpts;
   permission to read a site is not permission to redistribute it.

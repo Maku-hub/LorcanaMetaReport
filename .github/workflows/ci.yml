@@ -9,8 +9,8 @@ on:
 jobs:
   test:
     # Windows is a first-class target here, not an afterthought: the console-encoding
-    # bug this project hit only shows up on a non-UTF-8 code page, and shell syntax
-    # differences (PYTHONPATH=..., $env:...) only show up on PowerShell.
+    # bug this project hit only shows up on a non-UTF-8 code page, and the shell
+    # differences only show up on PowerShell.
     strategy:
       fail-fast: false
       matrix:
@@ -27,14 +27,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       # Installing the project is also what puts `lorcana-meta` on PATH, so the
       # steps below exercise the same entry point a user gets.
       - name: Install
-        run: python -m pip install -e ".[inkdecks]"
+        run: python -m pip install -e .
 
       - name: Pipeline tests
         run: python tests/test_pipeline.py
@@ -45,15 +41,10 @@ jobs:
       - name: Local source and importer tests
         run: python tests/test_local_source.py
 
-      # Fixture-driven, so this needs no permission, no key and no network. It is
-      # what tells you inkdecks changed their markup.
+      # Fixture-driven, so this needs no permission and no network. It is what tells
+      # you inkdecks changed their markup.
       - name: inkdecks parser tests
         run: python tests/test_inkdecks.py
-
-      # Pins the browser-side decklist parser to the Python one. They have drifted
-      # before, and when they drift a pasted list silently stops matching.
-      - name: Site parsing matches the pipeline
-        run: node tests/test_site_parsing.mjs
 
       - name: Build a report end to end from the sample field
         run: |
@@ -80,7 +71,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: python -m pip install -e ".[inkdecks]"
+        run: python -m pip install -e .
 
       - name: Build with a non-UTF-8 console
         shell: pwsh

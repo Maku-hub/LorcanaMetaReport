@@ -29,7 +29,6 @@ const state = {
   route: { name: "overview", arg: "" },
   cardFilter: "",
   typeFilter: "",
-  deckInput: "",
   showFringe: false, // the long tail of one-off cards on a pair page
   tables: new Set(), // ids of charts currently showing their table twin
 };
@@ -57,7 +56,7 @@ function pct(value, digits = 1) {
   return value === null || value === undefined ? "–" : `${num(value, digits)}%`;
 }
 
-/** Mirror of `lorcana_meta.cards.normalize_name` so pasted lists match. */
+/** Fold a card name for the search box, so "elsa snow" finds "Elsa - Snow Queen". */
 function normalizeName(name) {
   return String(name)
     .normalize("NFKD")
@@ -793,164 +792,6 @@ function renderThreats() {
     </section>`;
 }
 
-/* -------------------------------------------------------------- your deck */
-
-/** Parse a pasted decklist the same way the Python pipeline does. */
-function parsePastedDeck(text) {
-  const cards = new Map();
-  for (const raw of String(text).split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    let match = line.match(/^(\d{1,2})\s*[xX]?[\s.)-]+(.*)$/);
-    let count, name;
-    if (match) {
-      count = parseInt(match[1], 10);
-      name = match[2];
-    } else {
-      match = line.match(/^(.*?)\s+[xX](\d{1,2})$/);
-      if (!match) continue;
-      name = match[1];
-      count = parseInt(match[2], 10);
-    }
-    // Strip trailing bookkeeping until the name settles - the patterns stack, e.g.
-    // "Mickey Mouse - Brave Little Tailor (TFC) 42" needs the number gone before
-    // the set code is at the end to be seen. Mirrors `_clean_name` in decklist.py.
-    let previous = null;
-    while (previous !== name) {
-      previous = name;
-      name = name
-        .replace(/\s*(?:\([A-Za-z0-9 ]{2,12}\)|\[[^\]]{1,16}\]|#\d+)\s*$/, "")
-        .replace(/\s+\d{1,3}$/, "")
-        .trim();
-    }
-    if (!name || count < 1 || count > 20) continue;
-    const key = normalizeName(name);
-    cards.set(key, (cards.get(key) || 0) + count);
-  }
-  return cards;
-}
-
-function renderDeck() {
-  const meta = state.meta;
-  const byKey = new Map(Object.keys(meta.cards).map((name) => [normalizeName(name), name]));
-  const parsed = parsePastedDeck(state.deckInput);
-
-  const matched = [];
-  const unmatched = [];
-  for (const [key, count] of parsed) {
-    const name = byKey.get(key);
-    if (name) matched.push({ name, count, info: meta.cards[name] });
-    else unmatched.push(key);
-  }
-
-  const inks = new Set();
-  for (const entry of matched) {
-    if ((entry.info.inks || []).length === 1) inks.add(entry.info.inks[0]);
-  }
-  const pairKey = [...inks].sort().join("-");
-  const myPair =
-    meta.pairs.find((p) => [...p.inks].sort().join("-") === pairKey) || null;
-
-  const owned = new Set(matched.map((entry) => normalizeName(entry.name)));
-  const threats = meta.threats.slice(0, 40);
-  const covered = threats.filter((t) => owned.has(normalizeName(t.name))).length;
-  const maxExpected = Math.max(...threats.map((t) => t.expected_copies), 0.01);
-
-  const summary = parsed.size
-    ? `<div class="kpis">
-        ${tile(
-          "Your inks",
-          inks.size ? [...inks].map((i) => i[0].toUpperCase() + i.slice(1)).join(" / ") : "–",
-          myPair
-            ? `${pct(myPair.share)} of the field plays this pair`
-            : "this pair did not place in this window",
-          "hero-text"
-        )}
-        ${tile("Cards recognised", `${num(matched.length)}`, `${num(
-          [...parsed.values()].reduce((a, b) => a + b, 0)
-        )} copies pasted`)}
-        ${tile("Mirror win rate", myPair ? pct(myPair.record.win_rate) : "–", myPair
-          ? `${num(myPair.decks)} decks like yours`
-          : "no data for your pair")}
-        ${tile("Top-40 threats you also play", `${num(covered)}/40`, "shared cards, not answers")}
-      </div>
-      ${
-        unmatched.length
-          ? `<div class="warn">${num(
-              unmatched.length
-            )} line(s) did not match a card played in this field. Either nobody in the meta plays them, or the name needs the full "Name - Version" form.</div>`
-          : ""
-      }`
-    : "";
-
-  const board = parsed.size
-    ? `<section class="card">
-        <div class="card__head"><h2>The field's 40 biggest threats, against your list</h2></div>
-        <p class="subtitle">
-          Sorted by expected copies across the whole field. <span class="badge badge--own">in your deck</span>
-          means you run the card too - useful for spotting mirrors and shared answers, not proof you
-          can beat it.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Card</th><th class="num">Cost</th><th>Expected copies</th><th></th></tr>
-            </thead>
-            <tbody>
-              ${threats
-                .map((threat) => {
-                  const mine = owned.has(normalizeName(threat.name));
-                  return `<tr>
-                    <td class="name"><div class="card-name">${inkPairChips(
-                      threat.inks
-                    )}${cardButton(threat.name)}</div></td>
-                    <td class="num">${num(threat.cost)}</td>
-                    <td>${meter(
-                      threat.expected_copies,
-                      maxExpected,
-                      num(threat.expected_copies, 2)
-                    )}</td>
-                    <td>${
-                      mine
-                        ? '<span class="badge badge--own">in your deck</span>'
-                        : '<span class="badge">you don\'t play it</span>'
-                    }</td>
-                  </tr>`;
-                })
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      </section>`
-    : "";
-
-  return `<h1>Your deck against the field</h1>
-    <p class="subtitle">
-      Paste a decklist - one card per line, <code>4 Elsa - Snow Queen</code> style. It stays in your
-      browser; nothing is uploaded.
-    </p>
-    <div class="grid grid--sidebar">
-      <section class="card">
-        <div class="card__head"><h2>Your decklist</h2></div>
-        <p class="subtitle">Exports from most deck builders paste in as-is.</p>
-        <textarea id="deck-input" spellcheck="false" placeholder="4 Elsa - Snow Queen
-4 Hades - Lord of the Underworld
-3 Be Prepared
-…">${esc(state.deckInput)}</textarea>
-        <p class="hint">
-          Cards are matched against the ${num(
-            Object.keys(meta.cards).length
-          )} printings that appear in this field, so a card nobody plays will not match.
-        </p>
-      </section>
-      <div>${
-        summary ||
-        `<section class="card"><div class="empty">Paste a list to compare it against the field.</div></section>`
-      }</div>
-    </div>
-    ${board}`;
-}
-
 /* ----------------------------------------------------------------- about */
 
 function renderAbout() {
@@ -1038,8 +879,6 @@ function render() {
     html = renderPair(route.arg);
   } else if (route.name === "threats") {
     html = renderThreats();
-  } else if (route.name === "deck") {
-    html = renderDeck();
   } else if (route.name === "about") {
     html = renderAbout();
   } else {
@@ -1153,19 +992,6 @@ function attachEvents() {
         field.setSelectionRange(caret, caret);
       }
     }
-    if (event.target.id === "deck-input") {
-      state.deckInput = event.target.value;
-      saveDeck(state.deckInput);
-      clearTimeout(attachEvents._timer);
-      attachEvents._timer = setTimeout(() => {
-        render();
-        const field = $("#deck-input");
-        if (field) {
-          field.focus();
-          field.setSelectionRange(field.value.length, field.value.length);
-        }
-      }, 350);
-    }
   });
 
   view.addEventListener("change", (event) => {
@@ -1228,24 +1054,6 @@ function fakeEvent(node) {
   return { clientX: box.right, clientY: box.top };
 }
 
-/* The pasted decklist is the one thing a visitor typed, so keep it across visits.
-   It never leaves the browser. */
-function saveDeck(text) {
-  try {
-    localStorage.setItem("lorcana-meta-deck", text);
-  } catch (error) {
-    /* private browsing - the list just will not survive a reload */
-  }
-}
-
-function restoreDeck() {
-  try {
-    state.deckInput = localStorage.getItem("lorcana-meta-deck") || "";
-  } catch (error) {
-    state.deckInput = "";
-  }
-}
-
 function restoreTheme() {
   try {
     const saved = localStorage.getItem("lorcana-meta-theme");
@@ -1274,7 +1082,6 @@ async function loadMeta() {
 
 async function boot() {
   restoreTheme();
-  restoreDeck();
   state.route = parseRoute();
   attachEvents();
   try {
@@ -1284,8 +1091,9 @@ async function boot() {
         <p>No report data yet.</p>
         <p class="hint">
           The report data is generated, not committed, so a fresh clone starts empty.
-          Build it with <code>.\scripts\build.ps1 -Sample</code> on Windows, or
-          <code>lorcana-meta build --source local --last 40</code> elsewhere.
+          Build it with
+          <code>python tools/generate_sample_decks.py</code> then
+          <code>lorcana-meta build --source local --last 40</code>.
         </p>
         <p class="hint">Could not load <code>${DATA_URL}</code>: ${esc(error.message)}</p>
       </div>`;

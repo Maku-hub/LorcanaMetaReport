@@ -9,18 +9,21 @@ description = "Build a Disney Lorcana tournament-meta report and publish it as a
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = ["requests>=2.32"]
-
-# Everything the inkdecks source needs. Kept out of the core install so someone
-# using only local decklists does not pull in an HTML parser and a bot-filter client.
+# One list, no extras. There used to be an `[inkdecks]` extra holding the HTML parser
+# and the HTTP client, on the theory that a local-decklists-only user should not carry
+# them. It cost more than it saved: the documented install was `pip install -e .`,
+# which quietly produced an installation that could not read the default source, and
+# the failure surfaced as "package not installed" for a package that was installed -
+# just not for that interpreter, and not in that extra.
 #
-# curl_cffi lives here rather than behind its own extra because the fallback fires
-# mid-run, hours into a build, and "install this and start over" is a bad thing to
-# discover then. Installed-but-idle is the cheaper failure. It is only *used* when
-# the site refuses the plain path - see sources/inkdecks.py for why that is an
-# agreement being exercised rather than a control being circumvented.
-[project.optional-dependencies]
-inkdecks = ["beautifulsoup4>=4.12", "curl_cffi>=0.7"]
+# curl_cffi is not optional now that it is the only transport. See
+# sources/inkdecks.py for why using it is an agreement being exercised rather than a
+# control being circumvented.
+dependencies = [
+    "requests>=2.32",        # the card database
+    "beautifulsoup4>=4.12",  # parsing scraped HTML
+    "curl_cffi>=0.7",        # the HTTP client the site will actually answer
+]
 
 [project.urls]
 Source = "https://github.com/"

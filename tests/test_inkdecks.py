@@ -377,63 +377,28 @@ def test_no_min_players_fetches_everything():
     check(len(fetched) == 3, f"no filter means no filtering: {fetched}")
 
 
-# ------------------------------------------------------------------ transports
+# ------------------------------------------------------------------ transport
 
-def test_default_transport_is_the_polite_one():
-    """Impersonation is a fallback, never the opening move."""
-    source = isolated()
-    check(source.transport == "auto", f"auto by default, got {source.transport}")
-    check(source._session.label == "plain", f"starts plain, got {source._session.label}")
+def test_there_is_one_client_and_it_is_read_only():
+    """One transport, no switching.
 
-
-def test_plain_never_escalates():
-    check(isolated(transport="plain")._session.label == "plain", "plain stays plain")
-
-
-def test_transport_is_remembered_between_runs():
-    """Rediscovering a standing block costs two refusals and a minute of backoff.
-
-    The cache already knows the answer, so a build that needed curl_cffi yesterday
-    starts there today instead of earning the same 403s again.
+    A plain-requests-first design with escalation was tried and dropped: every run
+    began by earning two 403s and a minute of backoff to rediscover a standing
+    block, and it needed a transport switch, a remembered-transport cache file and
+    a branch in the retry loop to manage. One client that works beats two clients
+    and the machinery to choose between them.
     """
-    with tempfile.TemporaryDirectory() as directory:
-        first = InkdecksSource(consent=True, cache_dir=directory)
-        check(first._session.label == "plain", "nothing remembered yet -> plain")
+    from lorcana_meta.sources.inkdecks import IMPERSONATE, _session
 
-        first._save_transport("curl_cffi")
-        second = InkdecksSource(consent=True, cache_dir=directory)
-        check(
-            second._session.label == "curl_cffi",
-            f"picks up what worked, got {second._session.label}",
-        )
+    check(isolated()._session.label == "curl_cffi", "the only client")
+    check(IMPERSONATE, "a browser profile is pinned rather than left to the library")
 
-        # An explicit --inkdecks-scraper plain still overrides the memory.
-        third = InkdecksSource(consent=True, cache_dir=directory, transport="plain")
-        check(third._session.label == "plain", "an explicit choice beats the memory")
-
-
-def test_a_corrupt_transport_file_falls_back_to_plain():
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "transport.json"
-        for junk in ("not json", '{"transport": "selenium"}', "{}", '{"transport": 7}'):
-            path.write_text(junk, encoding="utf-8")
-            source = InkdecksSource(consent=True, cache_dir=directory)
-            check(
-                source._session.label == "plain",
-                f"{junk!r} -> plain, got {source._session.label}",
-            )
-
-
-def test_impersonating_session_is_still_read_only():
-    """The guarantee must not depend on which transport is in play."""
-    from lorcana_meta.sources.inkdecks import _impersonating_session
-
-    session = _impersonating_session({"User-Agent": "x"})
-    check(session.label == "curl_cffi", f"label: {session.label}")
+    # The read-only guarantee is a property of the wrapper, not of the client.
+    session = _session({"User-Agent": "x"})
     for method in ("post", "put", "patch", "delete", "request"):
         try:
             getattr(session, method)
-            FAILURES.append(f"{method}() is reachable on the curl_cffi session")
+            FAILURES.append(f"{method}() is reachable on the session")
         except SourceError:
             pass
     check(callable(session.get), "get() still works")
@@ -747,7 +712,6 @@ def test_rejects_unknown_options():
     for kwargs, what in (
         ({"category": "standard"}, "category"),
         ({"rank": "top3"}, "rank filter"),
-        ({"transport": "selenium"}, "transport"),
     ):
         try:
             isolated(**kwargs)
@@ -767,8 +731,6 @@ def test_defaults_are_polite():
     source = isolated()
     check(source.delay >= 2.0, f"the default delay is {source.delay}s")
     check(source.max_decks and source.max_decks <= 2000, f"max_decks={source.max_decks}")
-    check(source.transport == "auto", "plain HTTP first, escalate only if blocked")
-    check(source._session.label == "plain", "impersonation is not used up front")
 
 
 def test_delay_has_a_floor():

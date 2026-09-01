@@ -111,15 +111,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "rate-limits, and never shrinks within a run (default: 3.0)",
     )
     inkdecks.add_argument(
-        "--inkdecks-scraper",
-        default="auto",
-        choices=("auto", "plain", "curl_cffi"),
-        dest="inkdecks_transport",
-        help="how to make the requests. 'auto' uses plain HTTP and escalates to "
-        "curl_cffi only if the site refuses the client; 'plain' never escalates; "
-        "'curl_cffi' starts there. Whichever worked is remembered (default: auto)",
-    )
-    inkdecks.add_argument(
         "--inkdecks-max-decks",
         type=int,
         default=1500,
@@ -187,7 +178,6 @@ def _build_source(args: argparse.Namespace):
             consent=args.inkdecks_consent,
             delay=args.inkdecks_delay,
             max_decks=args.inkdecks_max_decks,
-            transport=args.inkdecks_transport,
             # Attendance is on the listing row, so this filters before any deck page
             # is fetched - it saves requests rather than wasting them.
             min_players=args.min_players,

@@ -8,18 +8,21 @@ from repeating them.
 
 ## Commands
 
+Everything runs through the CLI. There are deliberately no wrapper scripts — one way
+to run it, nothing to keep in step.
+
 ```powershell
-.\scripts\setup.ps1                                  # once: creates .venv, installs, caches card data
-.\scripts\build.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
-.\scripts\serve.ps1                                  # preview the multi-file site
-.\scripts\schedule.ps1 -Source inkdecks -Weekly Monday -At 07:00
+python -m pip install -e .                            # once; puts lorcana-meta on PATH
+lorcana-meta build --last 14 --top 32                 # inkdecks is the default source
+.venv\Scripts\python.exe tools\bundle_report.py       # -> report.html
 ```
 
-The project must be installed (`pip install -e ".[inkdecks]"`) so `lorcana-meta` is
-on PATH. There is no `PYTHONPATH=` prefix — that is POSIX syntax and fails on
-PowerShell.
+There is no `PYTHONPATH=` prefix and no extras to remember — that is POSIX syntax, it
+fails on PowerShell, and the `[inkdecks]` extra was folded into the core dependencies
+precisely because `pip install -e .` was producing installs that could not read the
+default source.
 
-Run the tests before calling anything done. All six, plus the report check:
+Run the tests before calling anything done. All five, plus the report check:
 
 ```powershell
 .venv\Scripts\python.exe tests\test_pipeline.py       # parsing, inks, aggregation maths
@@ -27,7 +30,7 @@ Run the tests before calling anything done. All six, plus the report check:
 .venv\Scripts\python.exe tests\test_local_source.py   # decks off disk, paste importer
 .venv\Scripts\python.exe tests\test_inkdecks.py       # inkdecks parsers, consent, throttle, lock
 .venv\Scripts\python.exe tests\test_bundle.py         # the single-file report stays self-contained
-node tests\test_site_parsing.mjs                      # browser parser matches the Python one
+.venv\Scripts\python.exe tests\check_report.py        # the built report is publishable-sane
 ```
 
 No test dependencies, no network, no permissions needed. `tests/test_inkdecks.py
@@ -84,7 +87,8 @@ pattern into another project, and do not widen it here. See `docs/DECISIONS.md`.
   success while eight builds keep running. Use
   `Get-CimInstance Win32_Process | Where-Object CommandLine -like ... | Stop-Process`.
 - A moved `.venv` still imports from its original path (`__editable__*.pth` holds an
-  absolute path). After moving the project, run `.\scripts\setup.ps1 -Recreate`.
+  absolute path). After moving the project, delete `.venv` and re-create it:
+  `python -m venv .venv` then `pip install -e .`.
 
 ## Conventions
 

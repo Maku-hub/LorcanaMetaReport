@@ -61,22 +61,28 @@ here. No forms, no logins, no images, no assets: HTML in, parsed, cached, done. 
 bytes pulled are counted and logged, so the footprint is reported rather than
 guessed at.
 
-## When Cloudflare blocks the client rather than the address
+## Why the HTTP client is curl_cffi and not requests
 
-Measured on 2026-08-28: every Python client on this machine got 403 on every path,
-the site root included, while a browser on the same connection was served normally.
-No ``Retry-After``, no 429 - a WAF block keyed on what the client *is*, not on where
-it comes from or how fast it asks.
+The site's Cloudflare rules block on what the client *is*. Measured on 2026-08-28:
+every Python client on this machine got 403 on every path, the site root included,
+while a browser on the same connection was served normally - no ``Retry-After``, no
+429. A WAF rule keyed on TLS fingerprint, not on address or rate.
 
-cloudscraper does not solve that, and was removed. It handles the older JavaScript
-challenge but still speaks Python's TLS, so it presents the very fingerprint being
-refused; tried against the real block it returned 403 exactly like plain
-``requests``. Keeping it as a "fallback" would only have meant a slower way to fail.
+So ``curl_cffi`` is the only transport, presenting a real browser's fingerprint.
+Verified against the live block: 200, deck rows intact.
 
-``curl_cffi`` does solve it, by presenting a real browser's TLS fingerprint.
-Verified against the live block: 200, with the deck rows intact.
+Two earlier designs were tried and dropped:
 
-That is impersonation, so the grounds for it belong in writing:
+* **cloudscraper.** Handles the older JavaScript challenge but still speaks Python's
+  TLS, so it presents the fingerprint being refused. Against the real block: 403,
+  identical to plain ``requests``. A slower way to fail.
+* **plain-first with escalation.** Worked, but every run began by earning two 403s
+  and a minute of backoff to rediscover a standing block, and it needed a transport
+  switch, a remembered-transport cache file and a branch in the retry loop to manage
+  it. One client that works beats two clients and the machinery to choose between
+  them.
+
+Impersonation deserves its grounds in writing:
 
 * inkdecks gave written permission for automated access, personal use.
 * They said they cannot practically allow-list an address - their side is not
@@ -84,15 +90,11 @@ That is impersonation, so the grounds for it belong in writing:
 * They approved using a bypass tool if one turned out to be necessary.
 * The maintainer of this project made the call knowingly.
 
-Remove any one of those and this is circumventing a security control rather than
-exercising an agreement. It is not a pattern to copy into another project.
+Remove any one and this is circumventing a security control rather than exercising
+an agreement. It is not a pattern to copy into another project.
 
-What it does **not** change is the footprint: same two paths, same one-at-a-time
-pacing, same read-only wrapper. A different TLS handshake, not a different crawl.
-
-``--inkdecks-scraper``: ``auto`` (plain, escalating to curl_cffi once the plain path
-is refused and backing off has not helped), ``plain``, or ``curl_cffi``. Which one
-worked is remembered in the cache, so the next run starts where the last ended up.
+It changes the handshake, not the crawl: same two paths, same one-at-a-time pacing,
+same cache, same read-only wrapper.
 
 """
 
@@ -105,8 +107,6 @@ import re
 import time
 from datetime import date
 from pathlib import Path
-
-import requests
 
 from ..models import INKS, Deck, DeckCard
 from .base import SourceError
@@ -160,10 +160,8 @@ MAX_CONSECUTIVE_FAILURES = 8
 #: A lock older than this is treated as abandoned - a killed build leaves one behind.
 LOCK_STALE_AFTER = 120.0
 LIST_CACHE_TTL = 3600  # list pages change as events are added; deck pages never do
-#: How the HTTP requests are made. See the module docstring.
-TRANSPORTS = ("auto", "plain", "curl_cffi")
 #: Which browser curl_cffi presents itself as. Pinned so a library update cannot
-#: silently change what the site sees.
+#: silently change what the site sees. First place to look if requests start failing.
 IMPERSONATE = "chrome"
 
 _ORDINAL = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
@@ -249,22 +247,12 @@ class ReadOnlySession:
         return getattr(self._session, name)
 
 
-def _plain_session(headers: dict) -> ReadOnlySession:
-    session = requests.Session()
-    session.headers.update(headers)
-    return ReadOnlySession(session, "plain")
+def _session(headers: dict) -> ReadOnlySession:
+    """The one HTTP client, presenting a real browser's TLS fingerprint.
 
-
-def _impersonating_session(headers: dict) -> ReadOnlySession:
-    """A session whose TLS fingerprint matches a real browser.
-
-    Needed because the site's Cloudflare rules key on what the client *is*: a browser
-    on this machine is served normally while every Python client on the same
-    connection gets 403 on every path. See the module docstring for why using this is
-    an agreement being exercised rather than a control being circumvented.
-
-    Still wrapped in ReadOnlySession, so the read-only guarantee does not depend on
-    which transport is in play.
+    See the module docstring for why this is the only transport and on what grounds
+    it is used. Wrapped in ReadOnlySession, so the read-only guarantee is not a
+    property of the client but of the wrapper around it.
     """
     try:
         from curl_cffi import requests as curl_requests
@@ -275,12 +263,10 @@ def _impersonating_session(headers: dict) -> ReadOnlySession:
         raise SourceError(
             "\n".join(
                 [
-                    "inkdecks blocked the plain HTTP path, and curl_cffi is not "
-                    "installed for the interpreter running this build:",
+                    "curl_cffi is not installed for the interpreter running this build:",
                     f"    {sys.executable}",
                     "  Install it there:",
-                    f'    "{sys.executable}" -m pip install -e ".[inkdecks]"',
-                    "  or re-run scripts/setup.ps1, which installs into .venv.",
+                    f'    "{sys.executable}" -m pip install -e .',
                 ]
             )
         ) from error
@@ -315,7 +301,6 @@ class InkdecksSource:
         max_decks: int | None = 1500,
         min_players: int | None = None,
         user_agent: str | None = None,
-        transport: str = "auto",
         timeout: int = 45,
     ) -> None:
         if not (consent or os.environ.get("INKDECKS_CONSENT")):
@@ -337,8 +322,6 @@ class InkdecksSource:
             )
         if rank not in RANKS:
             raise SourceError(f"Unknown rank filter {rank!r}; expected one of {RANKS}")
-        if transport not in TRANSPORTS:
-            raise SourceError(f"Unknown transport {transport!r}; expected one of {TRANSPORTS}")
 
         self.category = category
         #: Label for the report. With "all" it is per-deck, read off each row.
@@ -354,26 +337,16 @@ class InkdecksSource:
         self.max_decks = max_decks
         self.min_players = min_players
         self.timeout = timeout
-        self.transport = transport
         self._last_request = 0.0
-        self._headers = {
-            "User-Agent": user_agent
-            or os.environ.get("INKDECKS_USER_AGENT")
-            or DEFAULT_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-
-        # Start on whatever the last run needed. Rediscovering a standing block from
-        # scratch costs two refusals and a minute of backoff on every build, for an
-        # answer the cache already has - the same reasoning as the remembered delay.
-        remembered = self._load_transport()
-        if transport == "curl_cffi" or (transport == "auto" and remembered == "curl_cffi"):
-            if transport == "auto":
-                log.info("inkdecks: starting on curl_cffi, which is what worked last time")
-            self._session = _impersonating_session(self._headers)
-        else:
-            self._session = _plain_session(self._headers)
+        self._session = _session(
+            {
+                "User-Agent": user_agent
+                or os.environ.get("INKDECKS_USER_AGENT")
+                or DEFAULT_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+        )
 
     # -- fetching --------------------------------------------------------------
 
@@ -584,12 +557,10 @@ class InkdecksSource:
             # which is what a plain HTTP client does anyway.
             self._session.cookies.clear()
 
-            # 429 and 403 mean different things and want opposite responses.
+            # 429 and 403 still mean different things, even with one client.
             #
-            # 429 is "you are going too fast". The answer is to go slower - for the
-            # rest of the run, not just this request - and never to change client:
-            # pushing the same rate through a different HTTP stack is precisely the
-            # abuse the limit exists to stop.
+            # 429 is "you are going too fast", and the answer is to go slower for the
+            # rest of the run rather than just this request.
             if response.status_code == 429:
                 if attempt < 2:
                     self._slow_down()
@@ -605,25 +576,15 @@ class InkdecksSource:
                     continue
                 raise SourceError(self._refused_message(429, url))
 
-            # 403 is "we do not like your client". That is what the fallback is for.
+            # 403 is "we do not like your client". A browser fingerprint is already
+            # being presented, so there is nothing left to escalate to - back off in
+            # case it is transient, then say so plainly.
             if response.status_code == 403:
                 if attempt < 2:
-                    backoff = self.delay * (attempt + 1) * 4
+                    backoff = min(self.delay * (attempt + 1) * 4, MAX_BACKOFF)
                     log.warning("inkdecks: 403 on %s - backing off %.0fs", path, backoff)
                     time.sleep(backoff)
                     continue
-
-                if self.transport == "auto" and self._session.label == "plain":
-                    log.warning(
-                        "inkdecks: still refused after backing off, so this is a block "
-                        "on the client rather than the rate - switching to curl_cffi"
-                    )
-                    self._session = _impersonating_session(self._headers)
-                    self._save_transport("curl_cffi")
-                    return self._get(
-                        path, params=params, cache_ttl=cache_ttl, cache_key=cache_key
-                    )
-
                 raise SourceError(self._refused_message(403, url))
 
             response.raise_for_status()
@@ -665,26 +626,6 @@ class InkdecksSource:
     #
     # Without this, every run starts at the configured delay and re-earns the same
     # 429s before settling. A daily rebuild would collect them every morning.
-
-    def _transport_path(self) -> Path:
-        return self.cache_dir / "transport.json"
-
-    def _load_transport(self) -> str:
-        """Which transport last got through. Defaults to the polite one."""
-        try:
-            name = json.loads(self._transport_path().read_text("utf-8"))["transport"]
-        except (OSError, ValueError, KeyError, TypeError):
-            return "plain"
-        return name if name in TRANSPORTS else "plain"
-
-    def _save_transport(self, name: str) -> None:
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self._transport_path().write_text(
-                json.dumps({"transport": name}), encoding="utf-8"
-            )
-        except OSError:
-            pass  # a cache we cannot write is not worth failing a build over
 
     def _throttle_path(self) -> Path:
         return self.cache_dir / "throttle.json"
@@ -731,21 +672,13 @@ class InkdecksSource:
             ]
             return "\n".join(lines)
 
-        lines.append(
-            "  Nothing already cached is refetched, so a re-run resumes where this stopped."
-        )
-        if self._session.label == "curl_cffi":
-            lines.append(
-                "  curl_cffi did not get through either. A browser fingerprint is "
-                "already being presented, so this is more likely a real change on "
-                "their side than a client-fingerprint block. Worth asking them, with "
-                "the CF-RAY id from the response."
-            )
-        elif self.transport == "plain":
-            lines.append(
-                "  --inkdecks-scraper plain is set, so no fallback was tried. Drop that "
-                "flag to let it escalate to curl_cffi."
-            )
+        lines += [
+            "  Nothing already cached is refetched, so a re-run resumes where this stopped.",
+            "  A browser fingerprint is already being presented, so there is nothing "
+            f"left to escalate to. Check the {IMPERSONATE!r} profile in sources/"
+            "inkdecks.py is still current, and take the CF-RAY id from the response "
+            "to inkdecks - the block page's own advice.",
+        ]
         return "\n".join(lines)
 
     # -- one run at a time -----------------------------------------------------

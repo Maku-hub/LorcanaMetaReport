@@ -18,7 +18,6 @@ single local file, or publish it to GitHub Pages.
 | **Meta** | Which archetypes and ink pairs the field is made of, and how much of it each one is. |
 | **Archetype page** | For one deck: which cards are core (80%+ of lists run them), which are flex, **how many copies most lists run and whether they agree**, the curve, the best finishes, and every name players submitted it under. |
 | **What you'll face** | Every card ranked by **expected copies** — inclusion × how popular the deck playing it is. This is the list to build tech against. |
-| **Your deck** | Paste your list, see your pair's share of the field and which of the field's biggest threats you also play. Stays in your browser. |
 
 ### Archetypes come from card overlap, not deck names
 
@@ -72,112 +71,64 @@ answering "and when I do meet that deck, how many is it running".
 
 ---
 
-## Quick start
+## Getting started
 
-### Windows (PowerShell)
-
-```powershell
-git clone https://github.com/YOUR-USER/YOUR-REPO.git
-cd YOUR-REPO
-python -m pip install -e .
-
-# Build from the synthetic sample field and open it as one local file
-.\scripts\build.ps1 -Sample -Bundle
-```
-
-That writes `report.html`. Double-click it — no server, no hosting, nothing leaves
-your machine.
-
-With real data from [inkdecks.com](https://inkdecks.com/) — which needs their written
-permission, see below:
-
-```powershell
-$env:INKDECKS_CONSENT = "1"                                             # this window
-[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")  # from now on
-
-.\scripts\build.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
-```
-
-`.\scripts\serve.ps1` previews the multi-file version in a browser instead.
-
-### macOS / Linux
+Everything runs through one command line tool. There are no wrapper scripts to learn
+or keep in step with it.
 
 ```bash
 git clone https://github.com/YOUR-USER/YOUR-REPO.git
 cd YOUR-REPO
-python -m pip install -e .
 
+python -m venv .venv
+.venv/Scripts/activate                    # Windows;  source .venv/bin/activate  elsewhere
+pip install -e .
+```
+
+A virtual environment because this pulls in an HTML parser and a browser-fingerprint
+HTTP client, and a personal tool has no business changing what your other Python
+projects see. Installing the project is also what puts `lorcana-meta` on PATH — there
+is no `PYTHONPATH=` prefix to remember, which matters because that is POSIX shell
+syntax and PowerShell reads it as a command name.
+
+### Try it without touching anyone's server
+
+```bash
 python tools/generate_sample_decks.py
 lorcana-meta build --source local --last 40
-python tools/bundle_report.py          # -> report.html, open it directly
+python tools/bundle_report.py
 ```
 
-There are no shell wrappers for these platforms, because `lorcana-meta` plus `cron`
-covers the same ground:
+That writes `report.html`. Open it — no server, no hosting, nothing leaves your
+machine. The sample field uses real card names but invented decks, players and
+events, and the report says so on its own front page.
 
-```cron
-0 7 * * 1  cd /path/to/repo && .venv/bin/lorcana-meta build --source inkdecks --last 30 --top 32 && .venv/bin/python tools/bundle_report.py
+### Build from inkdecks
+
+Their terms require written permission for automated access, and the flag below is
+you stating you have it — see [inkdecks.com](#inkdecksfrom--permission-required) below.
+
+```bash
+export INKDECKS_CONSENT=1                       # bash
+$env:INKDECKS_CONSENT = "1"                     # PowerShell, this window
+[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")   # and future ones
+
+lorcana-meta build --last 14 --top 32
+python tools/bundle_report.py
 ```
 
-Installing the project is what puts `lorcana-meta` on PATH, so the same command
-works on every platform. There is no `PYTHONPATH=...` prefix to remember — that is
-POSIX shell syntax and PowerShell reads it as a command name.
+`inkdecks` is the default source, so `--source` is optional. Set the environment
+variable permanently as well as for the current window if you plan to run this from a
+scheduled task, which inherits your user environment but not the shell you typed in.
 
-The sample field uses real card names but invented decks, players and events. It is
-built to exercise the hard part: two ink pairs carry two different archetypes each,
-and every archetype is submitted under several names. The report flags on its own
-front page that the data is not real.
+Then open `report.html`. Make a shortcut to it somewhere convenient — that file is the
+application as far as daily use is concerned.
 
----
+### How long the first build takes
 
-## Running it for real (Windows)
-
-The setup this is built for: private, on one machine, refreshed on a schedule, read
-by double-clicking a file. No hosting, no account, nothing published.
-
-### Once
-
-```powershell
-git clone https://github.com/YOUR-USER/YOUR-REPO.git
-cd YOUR-REPO
-.\scripts\setup.ps1
-```
-
-That makes a `.venv`, installs the project into it, and pre-fetches the card
-database so a scheduled run at 6am is not the first thing to discover a proxy
-problem. `build.ps1` and `serve.ps1` find `.venv` on their own afterwards — there is
-no environment to activate.
-
-If you are using inkdecks, record your permission. The flag is you stating you have
-it, so nothing sets it for you:
-
-```powershell
-$env:INKDECKS_CONSENT = "1"                                                   # this window
-[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")        # from now on
-```
-
-Both, because they do different things. The first affects the PowerShell window you
-are in; the second affects every future one, including scheduled runs, which inherit
-your user environment — but **not** the window you type it in. Set only the second and
-your current session still refuses.
-
-### Whenever you want a fresh report
-
-```powershell
-# Top 32 of the last two weeks, Core Constructed
-.\scripts\build.ps1 -Source inkdecks -Days 14 -Top 32 -Bundle
-```
-
-`-Category` picks which of the site's tabs to read — `core` (the default),
-`infinity`, `poorcana`, or `all`. With `all` the field is mixed and each deck keeps
-its own format label, so an Infinity list never gets counted as a Core one.
-
-Then open `report.html`. Make a shortcut to it somewhere convenient — that file is
-the application as far as daily use is concerned.
-
-The first build of a fresh window is slow, and the reason is their rate limit rather
-than politeness for its own sake. Measured against the live site: the delay settles
-near its 20s ceiling and throughput works out to roughly **4 deck pages a minute**.
+Their rate limit, not politeness for its own sake. Measured against the live site:
+the delay settles near its 20s ceiling and throughput works out to roughly **4 deck
+pages a minute**.
 
 | Window | Decks | First build |
 |---|---|---|
@@ -189,53 +140,57 @@ near its 20s ceiling and throughput works out to roughly **4 deck pages a minute
 are cached forever and a rebuild only fetches what is new.
 
 A long first build does not have to happen in one sitting. Decks are fetched
-best-placed first and everything fetched is cached, so you can stop it with Ctrl+C
-and run the same command again tomorrow — it resumes where it left off, and a report
-built from a partial field says so on its own front page rather than passing it off
-as the whole meta.
-
-If you want a usable report today, `-Top 8` is the better trade: a fifth of the
-requests, and what wins is arguably a sharper signal than what merely gets played.
-
-### On a schedule
-
-```powershell
-.\scripts\schedule.ps1 -Source inkdecks -Weekly Monday -At 07:00 -Days 30
-```
-
-Registers a Windows scheduled task. It runs as you, only when you are logged on,
-never wakes the machine, and picks up a missed run once you are back. Weekly is
-usually the right cadence: the meta does not move daily, and it is kinder to the
-source.
-
-```powershell
-Start-ScheduledTask -TaskName LorcanaMetaReport    # run it now
-Get-ScheduledTaskInfo -TaskName LorcanaMetaReport  # last result
-.\scripts\schedule.ps1 -Remove                     # undo
-```
+best-placed first and everything fetched is cached, so you can stop it with Ctrl+C and
+run the same command tomorrow — it resumes where it left off, and a report built from
+a partial field says so rather than passing itself off as the whole meta.
 
 ### Choosing a window
 
 | You want | Try |
 |---|---|
-| The current meta, enough decks to trust | `-Days 30 -Top 32` |
-| What is winning, not just what is played | `-Days 45 -Top 8` |
-| A quick look, few requests | `-Days 7 -Top 8` |
-| Only serious events | add `-MinPlayers 32` — on a real window this cut 128 of 258 decks, and skipped those requests entirely |
-| A different format | add `-Category infinity` (or `poorcana`, or `all`) |
+| The current meta, enough decks to trust | `--last 30 --top 32` |
+| What is winning, not just what is played | `--last 45 --top 8` |
+| A quick look, few requests | `--last 7 --top 8` |
+| Only serious events | add `--min-players 32` — on a real window this cut 128 of 258 decks, and skipped those requests entirely |
+| A different format | add `--inkdecks-category infinity` (or `poorcana`, or `all`) |
 
 Under about 60 decks the percentages move a lot, and the report says so on its own
 front page rather than letting you read noise as a trend.
+
+### On a schedule
+
+Nothing project-specific here — point your scheduler at the same two commands.
+
+Windows, weekly. The meta does not move daily and a weekly cadence is kinder to the
+source:
+
+```powershell
+$cmd = "cd C:\path\to\repo; .\.venv\Scripts\lorcana-meta.exe build --last 30 --top 32; " +
+       ".\.venv\Scripts\python.exe tools\bundle_report.py"
+$action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$cmd`""
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 07:00
+Register-ScheduledTask -TaskName LorcanaMetaReport -Action $action -Trigger $trigger `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable)
+```
+
+cron:
+
+```cron
+0 7 * * 1  cd /path/to/repo && .venv/bin/lorcana-meta build --last 30 --top 32 && .venv/bin/python tools/bundle_report.py
+```
+
+Use the absolute path to the venv rather than trusting `PATH` inside the scheduler's
+environment. Set `INKDECKS_CONSENT` at user level so the task inherits it.
 
 ### Where things live
 
 | Path | What it is |
 |---|---|
 | `report.html` | The report. Open this. |
-| `site\data\meta.json` | The data behind it, if you want to script against it. |
-| `.cache\inkdecks\` | Cached deck pages and the learned request rate. Safe to delete; it just costs a slow rebuild. |
-| `.cache\cards.json` | The card database, refreshed daily. |
-| `.venv\` | The Python environment. Delete and re-run `setup.ps1` to reset. |
+| `site/data/meta.json` | The data behind it, if you want to script against it. |
+| `.cache/inkdecks/` | Cached deck pages and the learned request rate. Safe to delete; it just costs a slow rebuild. |
+| `.cache/cards.json` | The card database, refreshed daily. |
+| `.venv/` | The Python environment. Delete and re-create to reset. |
 
 ---
 
@@ -331,11 +286,17 @@ lorcana-meta build --start 2026-08-01 --end 2026-08-27
 lorcana-meta build --last 60 --top 1 --cluster-threshold 0.75
 ```
 
-Helper scripts: `tools/bundle_report.py` (single-file report),
-`tools/generate_sample_decks.py` (synthetic field),
-`tools/import_pasted_decks.py` (see below), `tests/check_report.py` (sanity-check a
-built report). On Windows, `scripts/build.ps1` and `scripts/serve.ps1` wrap the
-common cases.
+The rest of the tooling: `tools/bundle_report.py` (single-file report),
+`tools/generate_sample_decks.py` (synthetic field), `tools/import_pasted_decks.py`
+(see below), and `tests/check_report.py` (sanity-check a built report).
+
+To preview the multi-file version instead of the bundle, serve `site/` — a `file://`
+open will not work, because the page fetches `data/meta.json` and browsers block that
+on the file protocol:
+
+```bash
+cd site && python -m http.server 8000
+```
 
 ---
 
@@ -360,8 +321,7 @@ So the source exists, and it refuses to run until you confirm you have that cons
 
 ```bash
 export INKDECKS_CONSENT=1        # PowerShell: $env:INKDECKS_CONSENT = "1"
-python -m pip install -e ".[inkdecks]"
-lorcana-meta build --source inkdecks --last 14 --top 32
+lorcana-meta build --last 14 --top 32
 python tools/bundle_report.py
 ```
 
@@ -513,7 +473,6 @@ src/lorcana_meta/
   models.py       the domain types
 
 site/             index.html + one CSS + one JS file, no dependencies
-scripts/          Windows wrappers: setup.ps1, build.ps1, serve.ps1, schedule.ps1
 tools/            sample data, the paste importer, the single-file bundler
 tests/            dependency-free test suites, fixtures included
 ```
@@ -549,18 +508,15 @@ python tests/test_cluster.py        # archetype detection
 python tests/test_local_source.py   # reading decks off disk, the paste importer
 python tests/test_inkdecks.py       # inkdecks parsers and the consent gate
 python tests/test_bundle.py         # the single-file report stays self-contained
-node  tests/test_site_parsing.mjs   # the browser parser still matches the Python one
 ```
 
 No test dependencies — each file runs on its own, against saved HTML rather than the
-network. CI runs all six on Ubuntu **and Windows**, plus an end-to-end build, plus one job that builds with a `cp1250` console
-to keep non-ASCII card names printable on a legacy Windows code page.
+network. CI runs all five on Ubuntu **and Windows**, plus an end-to-end build, plus
+one job that builds with a `cp1250` console to keep non-ASCII card names printable on
+a legacy Windows code page.
 
-Two of those exist because of bugs that don't announce themselves:
+Two exist because of bugs that don't announce themselves:
 
-- `test_site_parsing.mjs` — the report parses pasted decklists in the browser while
-  the pipeline parses them in Python. When those drift, a player's list silently
-  stops matching the meta and nothing visibly breaks.
 - `test_bundle.py` — a bundle that stopped being self-contained still opens. It just
   shows "could not load data/meta.json", and only when you needed it.
 - `test_inkdecks.py` — when a scraped site changes its markup, a positional parser
