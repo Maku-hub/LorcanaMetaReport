@@ -25,8 +25,6 @@ class Card:
     text: str
     image: str
     set_id: str
-    set_name: str
-    unique_id: str
     rarity: str
 
     @property

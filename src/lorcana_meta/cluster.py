@@ -87,7 +87,7 @@ class Cluster:
         self.counts.append(counts)
         self._centroid = None
 
-    def absorb(self, other: "Cluster") -> None:
+    def absorb(self, other: Cluster) -> None:
         self.members += other.members
         self.counts += other.counts
         self._centroid = None
@@ -238,7 +238,9 @@ def label_for(signature: list[dict], fallback: str) -> str:
 def deck_names(cluster: Cluster, limit: int = 6) -> list[dict]:
     """The names players gave these lists - reference only, never used to group."""
     names: Counter = Counter(
-        (m.deck.deck_name or "").strip() for m in cluster.members if (m.deck.deck_name or "").strip()
+        (m.deck.deck_name or "").strip()
+        for m in cluster.members
+        if (m.deck.deck_name or "").strip()
     )
     # Sorted, not most_common(): Counter keeps insertion order for ties, which would
     # make the displayed order depend on which event was fetched first.

@@ -17,7 +17,8 @@ single local file, or publish it to GitHub Pages.
 |---|---|
 | **Meta** | Which archetypes and ink pairs the field is made of, and how much of it each one is. |
 | **Archetype page** | For one deck: which cards are core (80%+ of lists run them), which are flex, **how many copies most lists run and whether they agree**, the curve, the best finishes, and every name players submitted it under. |
-| **What you'll face** | Every card ranked by **expected copies** — inclusion × how popular the deck playing it is. This is the list to build tech against. |
+| **What you'll face** | Every card ranked by **expected copies**, with the archetypes that bring it and whether the field is picking it up. This is the list to build tech against. |
+| **Movement column** | Beside every share on all three overview charts — archetype, ink pair and single ink: what gained or lost ground between the two halves of the window. |
 
 ### Archetypes come from card overlap, not deck names
 
@@ -42,6 +43,44 @@ Each archetype is then named after the cards that **distinguish** it from the re
 its ink pair, preferring the expensive character a player would actually name the
 deck after. The names players used are collected and displayed for reference, and
 never touch the grouping. Details and reasoning: [`src/lorcana_meta/cluster.py`](src/lorcana_meta/cluster.py).
+
+### Movement is one window cut in half, not last month
+
+The report also shows which decks are gaining and losing ground. It does this without
+fetching anything extra: the requested window is split down the middle by date, and
+each pair, archetype and ink is counted on either side. The delta sits in a
+**Movement** column beside the share it belongs to, on all three overview charts, not
+in a table of its own — a separate "what is moving" table meant two lists of the same
+decks side by side with different memberships, and the reader had to work out why they
+disagreed.
+
+Ink movement is the same measure one level up: decks playing that ink as a share of
+its own half. An ink can rise while every pair it appears in falls — it only takes
+players moving between that ink's pairs — which is the thing worth knowing about an
+ink, so the chart carries it rather than leaving it to be derived.
+
+Two things about that are worth being clear on, because the number looks like
+something it is not:
+
+* **It is not a comparison with a previous report.** Same build, same decks, split by
+  date. `+9.4 pp` means the deck was 9.4 percentage points more of the field in the
+  back half of *this* window than in the front half.
+* **A fortnight has weather.** One large event landing in the second half moves every
+  share in it. The deck counts are printed next to each percentage for exactly that
+  reason, and a share is relative — one deck rising pushes every other down without
+  anybody playing them less.
+
+Clustering runs **once**, over the whole window, and the halves only count members of
+those clusters. Clustering each half separately would leave the report matching
+archetypes across halves — the problem card overlap exists to avoid in the first
+place.
+
+Movement is withheld rather than guessed at. A half with fewer than 15 decks, or a
+window under 4 days, gets no movement section at all — just a line saying which of
+those it was. Individual pairs and archetypes need 8 decks across the window before
+they get a delta, because a deck seen three times can swing twenty points on one list.
+On a real 320-deck fortnight about nine rows clear that bar and seventy do not, which
+is the honest picture rather than a page of noise.
 
 ### Copy counts are a mode, not a mean
 
@@ -68,6 +107,50 @@ decks, and averaging across them is exactly the mush this avoids.
 On the threat board, `expected copies` stays a true expectation over the whole field —
 fractional by design, and the right thing to rank by — with the modal count beside it
 answering "and when I do meet that deck, how many is it running".
+
+### The threat board names decks, not ink pairs
+
+Every card is ranked by **expected copies** — how many sit in a deck drawn at random
+from the field — and each row says which archetypes bring it.
+
+Archetypes, not ink pairs, and that distinction is the whole point. On real data the
+pair-level version of this line read *"Maleficent - Vengeful Sorceress, played by
+Amber/Amethyst 63.2%"*, where one archetype ran it in **every** list and another ran
+it in **none**. 63.2% invites preparing for a coin flip when the truth is "one deck
+always has it, the other never does" — and which one is across the table is exactly
+what the signature cards tell you. Averaging a card across an ink pair is the mush
+that clustering by card overlap exists to avoid, and the threat board was the last
+place still doing it.
+
+One-off lists are pooled per ink pair rather than listed. Each is a single deck, so a
+row per brew would read 100% inclusion on everything it plays and bury the decks worth
+preparing for. Pooling keeps the arithmetic whole: every deck running a card belongs to
+exactly one contributing group, brews included.
+
+Cards carry **movement** too, on the same window split and the same floor. This is the
+most directly useful line in the report: an archetype rising tells you which deck to
+prepare for, a card rising tells you what to prepare for regardless of which deck
+brings it — and that can happen with no archetype moving at all. The board can be
+sorted by it.
+
+Clicking any card anywhere opens its position in this meta: how much of the field runs
+it, how many copies, which decks, and which way it is moving.
+
+### The three overview charts are three cuts of one field
+
+The ink-pair and single-ink charts account for every deck. The archetype chart does
+not: one-off brews are left out of it, and on a real 320-deck field that is a quarter
+of the picture — 15 archetypes covering 74%, with 67 one-off lists holding the other
+26%. So the chart states that arithmetic in words. Add the bars up, get 74%, and the
+missing 26% is named right there rather than left to be worked out.
+
+Single-ink presence sums to about 200% rather than 100%, because a two-ink deck counts
+towards both of its inks. That is labelled on the chart.
+
+`tests/check_report.py` holds the parts that must never drift: every deck belongs to
+exactly one archetype of its pair, archetype shares of a pair sum to 100%, and each
+ink's deck count equals the pairs that ink appears in. A reader comparing two charts
+is doing the obvious thing, and the numbers have to survive it.
 
 ---
 
@@ -187,7 +270,7 @@ environment. Set `INKDECKS_CONSENT` at user level so the task inherits it.
 | Path | What it is |
 |---|---|
 | `report.html` | The report. Open this. |
-| `site/data/meta.json` | The data behind it, if you want to script against it. |
+| `site/data/meta.json` | The data behind it, if you want to script against it. It records the code that built it — version, commit, and whether the tree was dirty — so a report found on disk months later can say where it came from. |
 | `.cache/inkdecks/` | Cached deck pages and the learned request rate. Safe to delete; it just costs a slow rebuild. |
 | `.cache/cards.json` | The card database, refreshed daily. |
 | `.venv/` | The Python environment. Delete and re-create to reset. |
@@ -223,22 +306,24 @@ without one.
 > So "private repo + Pages" gives you a private repo and a **world-readable page** at
 > a guessable URL. If the report should stay yours, use the single local file above.
 
-If a public report is what you want:
+**There is no publish workflow in this repository.** There was one — manual-dispatch
+only, and unable to publish inkdecks data — and it was deleted. It was the only thing
+here that could make anything public, guarded by three separate checks, for a report
+whose whole point is being private. Three guards protecting a capability nobody used
+is still a way to lose.
 
-1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml) then rebuilds daily
-at 05:20 UTC and deploys `site/`. You can also run it by hand from the Actions tab
-and set the window, the placing cut, the format and a minimum event size. Without the
-secret it still publishes — from the synthetic sample field, so you can see the whole
-thing working before committing to a key.
+If you do want a public page from decklists you are allowed to redistribute, it is in
+the git history (`git log -- .github/workflows/publish.yml`) and it worked: **Settings
+→ Pages → Build and deployment → Source: GitHub Actions**, then restore the file. It
+runs only when you ask it to, publishes `--source local` only, and runs
+`tests/check_report.py` before deploying, which is what stops a private-use licence
+reaching a public URL.
 
 ### Private and automated
 
-If you want a scheduled rebuild without a public page, run the workflow on a private
-repo and drop the `deploy` job — keep the `upload-pages-artifact` step off and add an
-`actions/upload-artifact` step instead. You download `report.html` from the run.
-Private, but you fetch it by hand; a local scheduled task is usually less friction.
+Use Windows Task Scheduler and the single-file bundle. A scheduled task running
+`lorcana-meta build` then `python tools/bundle_report.py` leaves `report.html` on your
+disk with nothing published anywhere — see [On a schedule](#on-a-schedule).
 
 ---
 
@@ -330,9 +415,9 @@ python tools/bundle_report.py
 
 **Asking works.** The permission this source is written around is personal use with
 no commercialised public site built on their data — so it sets `publishable = False`,
-which travels into the report and makes `tests/check_report.py` fail, which stops the
-Pages workflow from deploying it. If your own permission differs, changing that is a
-deliberate edit, not a default to drift into.
+which travels into the report and makes `tests/check_report.py` fail — so anything
+that publishes has to be told to ignore a failing check first. If your own permission
+differs, changing that is a deliberate edit, not a default to drift into.
 
 It is built to be a good guest, and each of these came out of watching it run:
 
@@ -468,7 +553,7 @@ src/lorcana_meta/
   cards.py        card database + the name folding that makes lists match
   decklist.py     parsing pasted decklists, forgivingly
   cluster.py      archetype detection by card overlap
-  analyze.py      shares, inclusion rates, expected copies
+  analyze.py      shares, inclusion rates, expected copies, movement in the window
   console.py      UTF-8 output on a legacy Windows code page
   models.py       the domain types
 
@@ -479,8 +564,14 @@ tests/            dependency-free test suites, fixtures included
 
 **Adding a data source** is one file in `src/lorcana_meta/sources/`: implement
 `fetch(start, end) -> list[Deck]`, expose `name` / `attribution` /
-`attribution_url`, and register it in `sources/__init__.py`. Nothing downstream
-changes — the analysis only ever sees `Deck` objects.
+`attribution_url` / `publishable`, and register it in `sources/__init__.py`. Nothing
+downstream changes — the analysis only ever sees `Deck` objects.
+
+**Adding a field to the report** means giving it a reader in `site/assets/app.js`.
+`tests/test_report_shape.py` fails on a field nothing reads, because the whole JSON
+is shipped to the browser and inlined into `report.html`, and on a field the page
+reads that the build stopped emitting, because that renders as a blank cell rather
+than an error.
 
 ---
 
@@ -507,20 +598,29 @@ python tests/test_pipeline.py       # parsing, ink derivation, the aggregation m
 python tests/test_cluster.py        # archetype detection
 python tests/test_local_source.py   # reading decks off disk, the paste importer
 python tests/test_inkdecks.py       # inkdecks parsers and the consent gate
+python tests/test_report_shape.py   # the report and the page agree on their shape
 python tests/test_bundle.py         # the single-file report stays self-contained
+python tests/check_report.py        # a built report is sane (needs a build first)
+node   tests/test_render.mjs        # every page renders (needs a build first)
 ```
 
 No test dependencies — each file runs on its own, against saved HTML rather than the
-network. CI runs all five on Ubuntu **and Windows**, plus an end-to-end build, plus
-one job that builds with a `cp1250` console to keep non-ASCII card names printable on
-a legacy Windows code page.
+network. CI runs all seven on Ubuntu **and Windows**, plus an end-to-end build, plus
+`ruff check`, plus one job that builds with a `cp1250` console to keep non-ASCII card
+names printable on a legacy Windows code page.
 
-Two exist because of bugs that don't announce themselves:
+Four exist because of bugs that don't announce themselves:
 
 - `test_bundle.py` — a bundle that stopped being self-contained still opens. It just
   shows "could not load data/meta.json", and only when you needed it.
 - `test_inkdecks.py` — when a scraped site changes its markup, a positional parser
   reads the price column as a placing. Wrong numbers, no error.
+- `test_report_shape.py` — a field the build stops emitting renders as a blank cell,
+  not an error. It also holds the opposite line: nothing may ship in the JSON that
+  nothing reads, since the whole file goes to the browser and into `report.html`.
+- `test_render.mjs` — the page throwing during render leaves a blank screen with no
+  clue on it. This renders every page and checks each one says what it should. It is
+  the only test needing node, and needs no npm packages.
 
 `tests/test_inkdecks.py --live` (needs `INKDECKS_CONSENT=1`) additionally fetches two
 real pages and checks a full deck comes to 60 cards, which the trimmed fixtures

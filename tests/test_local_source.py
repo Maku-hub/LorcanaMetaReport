@@ -18,10 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
+from import_pasted_decks import parse_header, split_decks  # noqa: E402
+
 from lorcana_meta.console import configure_output  # noqa: E402
 from lorcana_meta.sources import LocalSource  # noqa: E402
-
-from import_pasted_decks import parse_header, split_decks  # noqa: E402
 
 FAILURES: list[str] = []
 

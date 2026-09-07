@@ -21,9 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from lorcana_meta.console import configure_output  # noqa: E402
-
 from bundle_report import _inline_safe, build  # noqa: E402
+
+from lorcana_meta.console import configure_output  # noqa: E402
 
 FAILURES: list[str] = []
 

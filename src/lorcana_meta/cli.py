@@ -28,6 +28,50 @@ CARD_DB_CREDIT = {
 }
 
 
+def _build_version() -> dict:
+    """What built this report: package version, commit, and whether the tree was dirty.
+
+    A `report.html` sits on disk and gets opened weeks later. It already records the
+    window, the placing cut and the clustering threshold - everything about the
+    *question* - but nothing about the code that answered it. When a number looks
+    wrong, "which build produced this" is the first thing you want and the one thing
+    it could not tell you.
+
+    `dirty` matters as much as the commit: a report built from a working tree with
+    uncommitted changes cannot be reproduced from that commit, and saying so is the
+    difference between a reproducible artefact and one that merely looks like one.
+
+    Git absence is not an error. An install from a wheel has no repository, and a
+    report is still perfectly valid without a commit to name.
+    """
+    import subprocess
+
+    from . import __version__
+
+    info: dict = {"version": __version__, "commit": None, "dirty": None}
+    repo = Path(__file__).resolve().parents[2]
+    if not (repo / ".git").exists():
+        return info
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    info["commit"] = git("rev-parse", "--short", "HEAD")
+    status = git("status", "--porcelain")
+    if info["commit"] is not None and status is not None:
+        info["dirty"] = bool(status)
+    return info
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="lorcana_meta",
@@ -43,15 +87,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="where decklists come from. 'inkdecks' needs their written permission - "
         "see --inkdecks-consent (default: inkdecks)",
     )
-    build.add_argument(
-        "--format",
-        default="Core Constructed",
-        dest="fmt",
-        help="Format label for decks that do not carry one, which in practice means "
-        "--source local. For inkdecks the format follows --inkdecks-category "
-        "(default: Core Constructed)",
-    )
-
     window = build.add_argument_group("time window")
     window.add_argument("--last", type=int, help="days back from today")
     window.add_argument("--start", help="first tournament date, YYYY-MM-DD")
@@ -118,10 +153,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "cannot become thousands of requests (default: 1500)",
     )
 
-    build.add_argument(
+    # --format lives here, not next to --source, because it only ever labels decks that
+    # arrive without a format of their own. Sitting at the top it read like the switch
+    # that picks the format to fetch, which for inkdecks is --inkdecks-category.
+    local = build.add_argument_group("local source", "Ignored unless --source local.")
+    local.add_argument(
         "--local-dir",
         default="data/decks",
-        help="directory of local decklists when --source local (default: data/decks)",
+        help="directory of local decklists (default: data/decks)",
+    )
+    local.add_argument(
+        "--format",
+        default="Core Constructed",
+        dest="fmt",
+        help="format label for these decks, which carry none themselves "
+        "(default: Core Constructed)",
     )
     build.add_argument(
         "--out",
@@ -151,7 +197,14 @@ def _resolve_window(args: argparse.Namespace) -> tuple[date, date]:
 
 
 #: Placing filters inkdecks offers, smallest bucket first.
-_INKDECKS_RANKS = ((1, "winners"), (2, "top2"), (4, "top4"), (8, "top8"), (16, "top16"), (32, "top32"))
+_INKDECKS_RANKS = (
+    (1, "winners"),
+    (2, "top2"),
+    (4, "top4"),
+    (8, "top8"),
+    (16, "top16"),
+    (32, "top32"),
+)
 
 
 def _inkdecks_rank(top: int) -> str:
@@ -207,38 +260,53 @@ def _apply_min_players(decks: list[Deck], minimum: int | None) -> list[Deck]:
     return [d for d in decks if d.tournament_players is None or d.tournament_players >= minimum]
 
 
-def _drop_thin_pairs(report: dict, minimum: int) -> dict:
-    """Fold ink pairs with too few decks out of the report.
+#: Fields computed and consumed inside the pipeline, then stripped before the report
+#: is written. They are real inputs - `_threats` needs `avg_copies_overall` and
+#: `pair_share`, `signature_cards` ranks on `edge` and `is_character` - but no reader
+#: of the finished file has any use for them, and on a 320-deck field they were 15%
+#: of it. Build fully, serialise leanly.
+_INTERNAL_FIELDS = {
+    "card_row": ("avg_copies_overall", "total_copies"),
+    "signature": ("edge", "is_character"),
+    "card": ("set_id",),
+}
 
-    A pair seen twice is not a meta reading, and leaving it in makes a 1-deck
-    novelty look like a 3% archetype. Dropped pairs are reported as a count so the
-    number is never silently missing.
+
+def _lean(report: dict) -> dict:
+    """Strip working fields, and card details nothing left in the report points at.
+
+    Runs last, once every derived number is final. Anything removed here must have no
+    reader in `site/assets/app.js`; `tests/test_report_shape.py` holds that line.
     """
-    if minimum <= 1:
-        return report
-
-    kept = [p for p in report["pairs"] if p["decks"] >= minimum]
-    dropped = [p for p in report["pairs"] if p["decks"] < minimum]
-    if not dropped:
-        return report
-
-    total = sum(p["decks"] for p in kept)
-    for pair in kept:
-        pair["share"] = round(100.0 * pair["decks"] / total, 1) if total else 0.0
-        # Archetype shares are quoted against the field, so they move with it too.
+    for pair in report.get("pairs", []):
+        for row in pair.get("cards", []):
+            for key in _INTERNAL_FIELDS["card_row"]:
+                row.pop(key, None)
         for variant in pair.get("variants", []):
-            variant["share_of_field"] = (
-                round(100.0 * variant["decks"] / total, 1) if total else 0.0
-            )
+            for row in variant.get("cards", []):
+                for key in _INTERNAL_FIELDS["card_row"]:
+                    row.pop(key, None)
+            for entry in variant.get("signature", []):
+                for key in _INTERNAL_FIELDS["signature"]:
+                    entry.pop(key, None)
 
-    report["pairs"] = kept
-    report["totals"]["decks_in_pairs"] = total
-    report["totals"]["pairs"] = len(kept)
-    report["totals"]["decks_dropped_thin_pairs"] = sum(p["decks"] for p in dropped)
-    report["totals"]["thin_pairs_dropped"] = len(dropped)
-    from .analyze import _threats  # local import keeps the public surface small
+    # Brews carry no card table (see analyze._variants), so cards played only by a
+    # one-off list are no longer reachable from anywhere. Keep the map to what the
+    # report can actually ask about.
+    reachable = {threat["name"] for threat in report.get("threats", [])}
+    for pair in report.get("pairs", []):
+        reachable |= {row["name"] for row in pair.get("cards", [])}
+        for variant in pair.get("variants", []):
+            reachable |= {row["name"] for row in variant.get("cards", [])}
+            reachable |= {entry["name"] for entry in variant.get("signature", [])}
 
-    report["threats"] = _threats(kept, report["cards"])
+    cards = report.get("cards", {})
+    report["totals"]["cards_described"] = len(reachable)
+    report["cards"] = {name: card for name, card in cards.items() if name in reachable}
+    for card in report["cards"].values():
+        for key in _INTERNAL_FIELDS["card"]:
+            card.pop(key, None)
+
     return report
 
 
@@ -290,9 +358,12 @@ def cmd_build(args: argparse.Namespace) -> int:
             "min_pair_decks": args.min_pair_decks,
         },
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        built_by=_build_version(),
         cluster_threshold=args.cluster_threshold,
+        # Applied inside, before anything is derived from a pair - see build_meta.
+        min_pair_decks=args.min_pair_decks,
     )
-    report = _drop_thin_pairs(report, args.min_pair_decks)
+    report = _lean(report)  # last: every derived number is final by here
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

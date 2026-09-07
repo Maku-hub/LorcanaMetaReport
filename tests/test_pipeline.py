@@ -43,8 +43,6 @@ def card(name, inks, cost=3, type_="Character"):
         text="",
         image="",
         set_id="TFC",
-        set_name="The First Chapter",
-        unique_id=name[:3].upper(),
         rarity="Common",
     )
 
@@ -262,7 +260,14 @@ def test_build_meta_shares_and_inclusion():
     check(record["win_rate"] == 71.4, f"win rate: {record['win_rate']}")
 
 
-def test_expected_copies_weights_by_pair_share():
+def test_expected_copies_is_the_field_mean_however_it_is_grouped():
+    """Copies per deck drawn at random from the field.
+
+    It used to be assembled as a weighted sum over ink pairs and now comes straight
+    off the field. The numbers must be identical - pairs partition the field, so the
+    weights always collapsed to "copies in the field over decks in the field" - and
+    these assertions are unchanged from when the weighted version wrote them.
+    """
     report = build_meta(
         _field(),
         _index(),
@@ -457,6 +462,431 @@ def test_one_card_on_two_lines_counts_as_one_deck():
     check(stats["copies_spread"] == {"4": 1}, f"2+2 is one 4-of: {stats['copies_spread']}")
     check(stats["typical_copies"] == 4, f"and the mode follows: {stats['typical_copies']}")
 
+
+# ------------------------------------------------------- movement in the window
+
+def _dated_field(dates: list[str], pair="amber-steel"):
+    """One deck per date, all in the same ink pair, so only the dates vary."""
+    cards = (
+        [DeckCard("Elsa - Snow Queen", 30), DeckCard("Hades - Lord of the Underworld", 30)]
+        if pair == "amber-steel"
+        else [DeckCard("Elsa - Snow Queen", 60)]
+    )
+    return [
+        Deck(
+            source="test",
+            deck_id=f"{pair}-{i}",
+            player=f"P{i}",
+            cards=list(cards),
+            standing=1,
+            wins=4,
+            losses=2,
+            draws=0,
+            tournament_id=f"T{i}",
+            tournament_name="Cup",
+            tournament_date=date,
+        )
+        for i, date in enumerate(dates)
+    ]
+
+
+def _built(decks, start="2026-08-01", end="2026-08-14", min_pair_decks=1):
+    days = (
+        __import__("datetime").date.fromisoformat(end)
+        - __import__("datetime").date.fromisoformat(start)
+    ).days + 1
+    return build_meta(
+        decks,
+        _index(),
+        period={"start": start, "end": end, "days": days},
+        source={"name": "test", "attribution": "test", "attribution_url": ""},
+        filters={"format": "Core Constructed", "top": 32},
+        generated_at="2026-08-27T00:00:00+00:00",
+        min_pair_decks=min_pair_decks,
+    )
+
+
+def test_the_window_splits_in_the_middle_by_date():
+    """A 14-day window splits on day 8, so each half is a week.
+
+    Not by deck count: halves of equal length are what "the second week" means, and
+    balancing on decks would let a quiet weekend move the boundary instead of showing
+    up as a thin half.
+    """
+    report = _built(_dated_field(["2026-08-01"] * 20 + ["2026-08-08"] * 20))
+    trend = report["trend"]
+    check(trend["split"] == "2026-08-08", f"split date: {trend['split']}")
+    check(trend["first"] == {"start": "2026-08-01", "end": "2026-08-07", "decks": 20},
+          f"first half: {trend['first']}")
+    check(trend["second"] == {"start": "2026-08-08", "end": "2026-08-14", "decks": 20},
+          f"second half: {trend['second']}")
+    check(trend["usable"], f"40 decks split evenly is usable: {trend['reason']}")
+
+
+def test_the_split_boundary_belongs_to_the_second_half():
+    """A deck dated exactly on the split must land on one side, not both or neither."""
+    report = _built(_dated_field(["2026-08-07"] * 16 + ["2026-08-08"] * 16))
+    check(report["trend"]["first"]["decks"] == 16, "the 7th is the first half")
+    check(report["trend"]["second"]["decks"] == 16, "the 8th is the second half")
+    check(
+        report["trend"]["first"]["decks"] + report["trend"]["second"]["decks"]
+        == report["totals"]["decks"],
+        "every dated deck is counted once",
+    )
+
+
+def test_a_thin_half_refuses_to_show_movement_and_says_why():
+    """Silence would read as "nothing moved". It has to read as "we cannot tell"."""
+    report = _built(_dated_field(["2026-08-01"] * 30 + ["2026-08-10"] * 2))
+    trend = report["trend"]
+    check(not trend["usable"], "two decks in a half is not a trend")
+    check("2 deck(s)" in (trend["reason"] or ""), f"the reason names the number: {trend['reason']}")
+    check(
+        all(pair["trend"] is None for pair in report["pairs"]),
+        "and no row carries a delta the report has said is unavailable",
+    )
+
+
+def test_a_window_too_short_to_halve_says_so():
+    report = _built(_dated_field(["2026-08-01"] * 40), start="2026-08-01", end="2026-08-03")
+    check(not report["trend"]["usable"], "a 3-day window has no two halves")
+    check("too short" in (report["trend"]["reason"] or ""), report["trend"]["reason"])
+
+
+def test_shares_are_of_their_own_half_and_the_delta_is_their_difference():
+    """The delta on screen must equal the two numbers printed beside it.
+
+    Subtracting the raw shares and rounding afterwards can leave the displayed
+    arithmetic off by a tenth, which reads as a bug to anyone who checks it.
+    """
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 5)
+    decks += _dated_field(["2026-08-01"] * 5 + ["2026-08-10"] * 15, pair="amber")
+    report = _built(decks)
+    check(report["trend"]["usable"], f"20 a side: {report['trend']['reason']}")
+
+    by_key = {pair["key"]: pair for pair in report["pairs"]}
+    two_ink = by_key["amber-steel"]["trend"]
+    check(two_ink["first_share"] == 75.0, f"15 of 20 in the first half: {two_ink}")
+    check(two_ink["second_share"] == 25.0, f"5 of 20 in the second: {two_ink}")
+    check(two_ink["delta"] == -50.0, f"and the delta is the difference: {two_ink['delta']}")
+    check(
+        round(two_ink["second_share"] - two_ink["first_share"], 1) == two_ink["delta"],
+        "the printed arithmetic checks out",
+    )
+
+    mono = by_key["amber"]["trend"]
+    check(mono["delta"] == 50.0, f"the other side moved the other way: {mono['delta']}")
+
+
+def test_a_row_with_too_few_decks_gets_no_delta_of_its_own():
+    """A pair seen 3 times can swing 20 points on one deck. That is not movement."""
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15)
+    decks += _dated_field(["2026-08-01", "2026-08-10", "2026-08-11"], pair="amber")
+    report = _built(decks)
+    by_key = {pair["key"]: pair for pair in report["pairs"]}
+    check(report["trend"]["usable"], "the window itself splits fine")
+    check(by_key["amber-steel"]["trend"] is not None, "30 decks gets a delta")
+    check(by_key["amber"]["trend"] is None, "3 decks does not")
+
+
+def test_undated_decks_are_counted_rather_than_dropped_quietly():
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15)
+    undated = _dated_field(["2026-08-01"] * 2)
+    for deck in undated:
+        deck.tournament_date = None
+    report = _built(decks + undated)
+    trend = report["trend"]
+    check(trend["undated_decks"] == 2, f"the two are counted: {trend['undated_decks']}")
+    check(
+        trend["first"]["decks"] + trend["second"]["decks"] + trend["undated_decks"]
+        == report["totals"]["decks"],
+        "and nothing is lost between the halves",
+    )
+
+
+def test_archetype_movement_uses_one_clustering_over_the_whole_window():
+    """Clustering per half would leave us matching archetypes across halves.
+
+    That is the problem card overlap exists to avoid, so the clusters are built once
+    over the full window and their members merely counted per half.
+    """
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15)
+    report = _built(decks)
+    variants = [v for pair in report["pairs"] for v in pair["variants"]]
+    check(len(variants) == 1, f"one archetype over the window: {len(variants)}")
+    trend = variants[0]["trend"]
+    check(trend is not None, "and it carries movement")
+    check(
+        trend["first_decks"] + trend["second_decks"] == variants[0]["decks"],
+        f"its members split across the halves: {trend}",
+    )
+
+
+def test_a_deck_with_no_event_date_does_not_take_the_build_down():
+    """`tournament_date` is optional, and sorting mixed None with str raises.
+
+    This crashed every build containing one undated deck - inside _examples, sorting
+    the sample finishes. Neither real source omits the date, so nothing hit it until a
+    hand-imported paste did. It is a TypeError, not a wrong number, so it takes the
+    whole report with it.
+    """
+    decks = _dated_field(["2026-08-01", "2026-08-02"])
+    decks[0].tournament_date = None
+    report = _built(decks)
+    examples = report["pairs"][0]["examples"]
+    check(len(examples) == 2, f"both decks still shown: {len(examples)}")
+    check(
+        [e["date"] for e in examples] == ["2026-08-02", None],
+        f"the dated one sorts first: {[e['date'] for e in examples]}",
+    )
+
+
+def test_single_ink_presence_carries_movement_on_the_same_measure():
+    """An ink moves like a pair does: decks playing it, over its own half.
+
+    An ink can rise while every pair it appears in falls - it only takes players
+    moving between that ink's pairs - which is the thing worth knowing about an ink,
+    so the chart has to carry it rather than leave the reader to derive it.
+    """
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 5)
+    decks += _dated_field(["2026-08-01"] * 5 + ["2026-08-10"] * 15, pair="amber")
+    report = _built(decks)
+
+    inks = {row["ink"]: row for row in report["inks"]}
+    # Every deck plays amber, in both halves, so amber cannot have moved.
+    check(inks["amber"]["decks"] == 40, f"all 40 play amber: {inks['amber']['decks']}")
+    check(inks["amber"]["trend"]["delta"] == 0.0, f"amber flat: {inks['amber']['trend']}")
+
+    # Steel is only in the two-ink half of the field, which shrank.
+    steel = inks["steel"]["trend"]
+    check(steel["first_share"] == 75.0, f"15 of 20: {steel}")
+    check(steel["second_share"] == 25.0, f"5 of 20: {steel}")
+    check(steel["delta"] == -50.0, f"and the delta follows: {steel['delta']}")
+
+    for ink, row in inks.items():
+        if row["decks"] and row["trend"]:
+            check(
+                row["trend"]["first_decks"] + row["trend"]["second_decks"] == row["decks"],
+                f"{ink}: halves account for every deck playing it: {row['trend']}",
+            )
+
+
+def test_an_ink_nobody_plays_gets_no_movement():
+    """A zero row must not claim a delta, and must not raise computing one."""
+    report = _built(_dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15))
+    unplayed = [row for row in report["inks"] if row["decks"] == 0]
+    check(bool(unplayed), "the test field leaves some inks unplayed")
+    for row in unplayed:
+        check(row["trend"] is None, f"{row['ink']}: no decks, no delta ({row['trend']})")
+        check(row["share"] == 0.0, f"{row['ink']}: zero share")
+
+
+# ------------------------------------------------------- the threat board
+
+def _split_pair_field():
+    """One ink pair holding two archetypes that disagree completely about one card.
+
+    This is the shape that exposed the bug: on real data, "Maleficent - Vengeful
+    Sorceress, played by Amber/Amethyst 63.2%" was one archetype running it in every
+    list and another running it in none.
+    """
+    decks = []
+    for i in range(8):  # archetype A: always runs the song
+        decks.append(
+            Deck(
+                source="test",
+                deck_id=f"a{i}",
+                player=f"A{i}",
+                cards=[
+                    DeckCard("Elsa - Snow Queen", 30),
+                    DeckCard("Hades - Lord of the Underworld", 26),
+                    DeckCard("Be Prepared", 4),
+                ],
+                standing=i + 1,
+                wins=4,
+                losses=2,
+                draws=0,
+                tournament_id="T1",
+                tournament_name="Cup",
+                tournament_date="2026-08-01",
+            )
+        )
+    for i in range(8):  # archetype B: same inks, never runs it
+        decks.append(
+            Deck(
+                source="test",
+                deck_id=f"b{i}",
+                player=f"B{i}",
+                cards=[
+                    DeckCard("Elsa - Snow Queen", 4),
+                    DeckCard("Hades - Lord of the Underworld", 56),
+                ],
+                standing=i + 1,
+                wins=4,
+                losses=2,
+                draws=0,
+                tournament_id="T2",
+                tournament_name="Cup",
+                tournament_date="2026-08-10",
+            )
+        )
+    return decks
+
+
+def test_threats_name_archetypes_not_ink_pairs():
+    """The average of "always" and "never" is a number nobody plays."""
+    report = _built(_split_pair_field())
+    threat = next(t for t in report["threats"] if t["name"] == "Be Prepared")
+
+    inclusions = sorted(c["inclusion"] for c in threat["archetypes"])
+    check(
+        inclusions == [100.0],
+        f"only the archetype that runs it is named, at 100%: {inclusions}",
+    )
+    check(
+        all(not c["is_brews"] for c in threat["archetypes"]),
+        "and it is named as an archetype, not a pool of one-offs",
+    )
+    named = threat["archetypes"][0]
+    check(named["decks"] == 8, f"the archetype's own deck count: {named['decks']}")
+    # The label has to name the deck, not the pair. Archetype-level numbers under a
+    # pair's name read as "the whole pair does this", which is the claim being fixed -
+    # and the numbers alone cannot catch that, so assert the label too.
+    check(
+        named["label"] != named["pair_label"],
+        f"the badge names the archetype, not {named['pair_label']}",
+    )
+    check(
+        named["pair_label"] == "Amber / Steel",
+        f"with the pair kept alongside for context: {named['pair_label']}",
+    )
+    check(
+        named["share_of_field"] == 50.0,
+        f"and its share of the field, for ordering: {named['share_of_field']}",
+    )
+    check(
+        threat["field_presence"] == 50.0,
+        f"half the field meets it - not 100% of one pair: {threat['field_presence']}",
+    )
+
+
+def test_threat_figures_match_the_decks_they_came_from():
+    """expected_copies and field_presence recomputed by hand from the same field."""
+    report = _built(_split_pair_field())
+    total = report["totals"]["decks"]
+    threat = next(t for t in report["threats"] if t["name"] == "Be Prepared")
+
+    check(
+        threat["expected_copies"] == 2.0,
+        f"32 copies over {total} decks: {threat['expected_copies']}",
+    )
+    check(threat["decks"] == 8, f"8 decks run it: {threat['decks']}")
+    check(threat["typical_copies"] == 4, f"and they run 4: {threat['typical_copies']}")
+
+
+def test_every_deck_playing_a_card_is_attributed_to_exactly_one_group():
+    """A card's contributors must account for every deck running it.
+
+    Brews carry no card table in the report, so an attribution built from the report
+    alone would silently lose them - a quarter of a real field. They are pooled per
+    ink pair instead, which keeps the arithmetic whole.
+    """
+    decks = _split_pair_field()
+    # Same inks and it runs the song, but the counts share almost nothing with either
+    # archetype, so it clusters alone. A first attempt at this used sensible-looking
+    # counts and quietly merged into archetype A - the test then proved nothing, and
+    # said so only because it asserted a brew existed.
+    decks.append(
+        Deck(
+            source="test",
+            deck_id="brew",
+            player="Brewer",
+            cards=[
+                DeckCard("Elsa - Snow Queen", 4),
+                DeckCard("Hades - Lord of the Underworld", 4),
+                DeckCard("Be Prepared", 52),
+            ],
+            standing=1,
+            wins=4,
+            losses=2,
+            draws=0,
+            tournament_id="T3",
+            tournament_name="Cup",
+            tournament_date="2026-08-12",
+        )
+    )
+    report = _built(decks)
+    for threat in report["threats"]:
+        if len(threat["archetypes"]) > 6:
+            continue  # the list is capped for display; nothing to reconcile
+        named = sum(c["decks"] for c in threat["archetypes"])
+        check(
+            named == threat["decks"],
+            f"{threat['name']}: groups name {named} decks, {threat['decks']} run it",
+        )
+
+    song = next(t for t in report["threats"] if t["name"] == "Be Prepared")
+    pooled = [c for c in song["archetypes"] if c["is_brews"]]
+    check(len(pooled) == 1, f"the one-off list is pooled, not listed: {song['archetypes']}")
+    check(pooled[0]["decks"] == 1, f"and its deck is counted: {pooled[0]}")
+
+
+def test_cards_carry_movement_with_the_same_floor_as_everything_else():
+    """A card the field barely plays gets no delta, however much it swung."""
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15)
+    for item in decks[-4:]:
+        item.cards = [
+            DeckCard("Elsa - Snow Queen", 26),
+            DeckCard("Hades - Lord of the Underworld", 30),
+            DeckCard("Be Prepared", 4),
+        ]
+    report = _built(decks)
+
+    threats = {t["name"]: t for t in report["threats"]}
+    check(report["trend"]["usable"], f"the window splits: {report['trend']['reason']}")
+    check(
+        threats["Be Prepared"]["trend"] is None,
+        f"4 decks is under the floor: {threats['Be Prepared']['trend']}",
+    )
+    everywhere = threats["Elsa - Snow Queen"]["trend"]
+    check(everywhere is not None, "a card in every deck does get one")
+    check(
+        everywhere["delta"] == 0.0,
+        f"and it cannot have moved, being everywhere: {everywhere}",
+    )
+    check(
+        round(everywhere["second_share"] - everywhere["first_share"], 1)
+        == everywhere["delta"],
+        "the delta is the difference between its own two shares",
+    )
+
+
+def test_thin_pairs_are_dropped_before_anything_is_quoted_against_the_field():
+    """Shares and threats must describe the field that survived, not the one before it.
+
+    The drop used to happen after the report was built, which meant walking back over
+    it re-deriving every share and rebuilding the threat board against a new
+    denominator. Now it happens first, and this pins the result.
+    """
+    decks = _dated_field(["2026-08-01"] * 15 + ["2026-08-10"] * 15)
+    decks += _dated_field(["2026-08-05"] * 2, pair="amber")  # a 2-deck novelty
+    report = _built(decks, min_pair_decks=3)
+
+    check(
+        {p["key"] for p in report["pairs"]} == {"amber-steel"},
+        f"the 2-deck pair is gone: {[p['key'] for p in report['pairs']]}",
+    )
+    check(report["pairs"][0]["share"] == 100.0, f"share: {report['pairs'][0]['share']}")
+    check(report["totals"]["decks"] == 30, f"the field is what is left: {report['totals']}")
+    check(
+        report["totals"]["decks_dropped_thin_pairs"] == 2,
+        "and the dropped decks are counted, not silently gone",
+    )
+    check(report["totals"]["thin_pairs_dropped"] == 1, "as is the pair")
+
+    for threat in report["threats"]:
+        named = sum(c["decks"] for c in threat["archetypes"])
+        check(named <= 30, f"{threat['name']} names {named} decks in a 30-deck field")
 
 def main() -> int:
     configure_output()

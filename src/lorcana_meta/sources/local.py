@@ -49,7 +49,9 @@ class LocalSource:
     attribution = "Decklists supplied locally"
     attribution_url = ""
 
-    def __init__(self, directory: Path | str = "data/decks", *, fmt: str = "Core Constructed") -> None:
+    def __init__(
+        self, directory: Path | str = "data/decks", *, fmt: str = "Core Constructed"
+    ) -> None:
         self.directory = Path(directory)
         self.fmt = fmt
 
@@ -67,7 +69,12 @@ class LocalSource:
                     decks.append(deck)
 
         kept = [d for d in decks if self._in_range(d, start, end)]
-        log.info("local: %d decks in %s, %d inside the window", len(decks), self.directory, len(kept))
+        log.info(
+            "local: %d decks in %s, %d inside the window",
+            len(decks),
+            self.directory,
+            len(kept),
+        )
         return kept
 
     @staticmethod

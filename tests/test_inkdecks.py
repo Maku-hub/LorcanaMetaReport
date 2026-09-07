@@ -11,7 +11,6 @@ something to find out in production.
 
 from __future__ import annotations
 
-import io
 import os
 import sys
 import tempfile
@@ -42,7 +41,7 @@ def check(condition, message):
 
 
 def fixture(name: str) -> str:
-    return io.open(FIXTURES / name, encoding="utf-8").read()
+    return open(FIXTURES / name, encoding="utf-8").read()
 
 
 # ------------------------------------------------------------------ placings
@@ -100,7 +99,11 @@ def test_parse_index_page():
         f"record: {first['wins']}-{first['losses']}-{first['draws']}",
     )
     check(first["inks"] == ["amber", "amethyst"], f"inks: {first['inks']}")
-    check(first["archetype"] == "Midrange", f"archetype: {first['archetype']!r}")
+    check(
+        "archetype" not in first,
+        "their own archetype label is deliberately not read - ours comes from card "
+        "overlap, and two differently-derived labels would invite trusting the wrong one",
+    )
     check(first["date"] == "2026-08-23", f"date: {first['date']}")
     check(first["players"] == 97, f"attendance: {first['players']}")
     check(
@@ -339,7 +342,13 @@ def test_small_events_are_filtered_before_any_deck_page_is_fetched():
         {"deck_id": "big", "deck_name": "regional", "path": "/a", "standing": 1, "players": 128},
         {"deck_id": "small", "deck_name": "friday", "path": "/b", "standing": 1, "players": 12},
         {"deck_id": "edge", "deck_name": "exactly", "path": "/c", "standing": 2, "players": 32},
-        {"deck_id": "unknown", "deck_name": "no size", "path": "/d", "standing": 3, "players": None},
+        {
+            "deck_id": "unknown",
+            "deck_name": "no size",
+            "path": "/d",
+            "standing": 3,
+            "players": None,
+        },
     ]
     fetched = []
     source._fetch_decklist = lambda stub: fetched.append(stub["deck_id"]) or [
@@ -375,6 +384,81 @@ def test_no_min_players_fetches_everything():
 
     source.fetch(date(2026, 8, 1), date(2026, 8, 31))
     check(len(fetched) == 3, f"no filter means no filtering: {fetched}")
+
+
+# ------------------------------------------------------------- error messages
+
+def _without_module(name: str):
+    """Context manager that makes one import fail, to exercise an error path."""
+    import builtins
+    import contextlib
+
+    @contextlib.contextmanager
+    def hide():
+        real = builtins.__import__
+
+        def fake(module, *args, **kwargs):
+            if module == name or module.startswith(name + "."):
+                raise ModuleNotFoundError(f"No module named {name!r}")
+            return real(module, *args, **kwargs)
+
+        builtins.__import__ = fake
+        try:
+            yield
+        finally:
+            builtins.__import__ = real
+
+    return hide()
+
+
+def test_a_missing_dependency_produces_a_useful_message():
+    """The bug this test exists for.
+
+    An error handler is code nobody runs until something is already wrong. These two
+    referenced `sys.executable` while `import sys` had been dropped from the module,
+    so a missing dependency raised `NameError: name 'sys' is not defined` instead of
+    saying which interpreter to install into - swapping a solvable problem for a
+    baffling one. A linter caught it; no test did.
+    """
+    from lorcana_meta.sources.inkdecks import _session, _soup
+
+    with _without_module("curl_cffi"):
+        try:
+            _session({})
+            FAILURES.append("a missing curl_cffi should raise SourceError")
+        except SourceError as error:
+            check(sys.executable in str(error), f"names the interpreter: {error}")
+            check("pip install" in str(error), "and how to fix it")
+        except Exception as error:
+            FAILURES.append(f"wrong exception type: {type(error).__name__}: {error}")
+
+    with _without_module("bs4"):
+        try:
+            _soup("<html></html>")
+            FAILURES.append("a missing bs4 should raise SourceError")
+        except SourceError as error:
+            check(sys.executable in str(error), f"names the interpreter: {error}")
+        except Exception as error:
+            FAILURES.append(f"wrong exception type: {type(error).__name__}: {error}")
+
+
+def test_refusal_messages_render():
+    """Both branches of _refused_message, since they only run on a bad day."""
+    source = isolated()
+    for status in (429, 403):
+        message = source._refused_message(status, "https://inkdecks.com/x")
+        check(str(status) in message, f"{status}: says which status")
+        check(len(message.splitlines()) >= 2, f"{status}: explains what to do")
+    check(
+        "rate limit" in source._refused_message(429, "u"),
+        "429 is described as a rate limit",
+    )
+    blocked = source._refused_message(403, "u")
+    check(
+        "nothing left to escalate" in blocked,
+        f"403 says there is no fallback rather than promising one: {blocked}",
+    )
+    check("CF-RAY" in blocked, "and points at the id inkdecks would need")
 
 
 # ------------------------------------------------------------------ transport
@@ -791,6 +875,7 @@ def test_a_rate_limit_resets_the_clean_streak():
         source = InkdecksSource(consent=True, cache_dir=directory, delay=3.0)
         source._slow_down()
         widened = source.delay
+        check(widened > 3.0, f"the 429 widened the delay at all: {widened}")
 
         for _ in range(EASE_AFTER - 1):
             source._speed_up()

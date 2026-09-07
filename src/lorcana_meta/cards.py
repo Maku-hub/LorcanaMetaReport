@@ -93,7 +93,7 @@ class CardIndex:
         *,
         refresh: bool = False,
         timeout: int = 120,
-    ) -> "CardIndex":
+    ) -> CardIndex:
         cache = Path(cache)
         raw = None
         if cache.exists() and not refresh:
@@ -133,7 +133,5 @@ class CardIndex:
             text=(entry.get("Body_Text") or "").strip(),
             image=(entry.get("Image") or "").strip(),
             set_id=(entry.get("Set_ID") or "").strip(),
-            set_name=(entry.get("Set_Name") or "").strip(),
-            unique_id=(entry.get("Unique_ID") or "").strip(),
             rarity=(entry.get("Rarity") or "").strip(),
         )

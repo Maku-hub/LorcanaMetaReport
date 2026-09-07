@@ -30,6 +30,7 @@ const state = {
   cardFilter: "",
   typeFilter: "",
   showFringe: false, // the long tail of one-off cards on a pair page
+  threatSort: "expected", // or "movement": what the field is picking up fastest
   tables: new Set(), // ids of charts currently showing their table twin
 };
 
@@ -54,6 +55,42 @@ function num(value, digits = 0) {
 
 function pct(value, digits = 1) {
   return value === null || value === undefined ? "–" : `${num(value, digits)}%`;
+}
+
+/**
+ * A share delta between the two halves of the window, in percentage points.
+ *
+ * "pp" not "%": a move from 20% to 25% is +5 percentage points, not +5%, and calling
+ * it +5% invites reading it as a quarter more decks. Direction is carried by the
+ * arrow and the sign, so the text still says which way it went when the colour is
+ * gone - printed, or read by someone who cannot separate the two hues.
+ *
+ * `null` means the row did not have the decks to say anything, which is different
+ * from having moved by zero, and reads differently on screen.
+ */
+function deltaText(trend) {
+  if (!trend) return `<span class="delta delta--flat" title="too few decks to say">–</span>`;
+  const value = trend.delta;
+  const rounded = Math.abs(value) < 0.05;
+  const arrow = rounded ? "→" : value > 0 ? "▲" : "▼";
+  const cls = rounded ? "flat" : value > 0 ? "rise" : "fall";
+  const sign = rounded ? "" : value > 0 ? "+" : "−";
+  const label = rounded ? "unchanged" : `${num(Math.abs(value), 1)} points ${
+    value > 0 ? "up" : "down"
+  }`;
+  return `<span class="delta delta--${cls}" title="${esc(
+    `${pct(trend.first_share)} in the first half → ${pct(trend.second_share)} in the second`
+  )}"><span aria-hidden="true">${arrow} ${sign}${num(
+    Math.abs(value),
+    1
+  )} pp</span><span class="sr-only">${esc(label)}</span></span>`;
+}
+
+/** Plain-text twin of `deltaText`, for a table cell that has to stay copyable. */
+function deltaPlain(trend) {
+  if (!trend) return "–";
+  if (Math.abs(trend.delta) < 0.05) return "0.0 pp";
+  return `${trend.delta > 0 ? "+" : "−"}${num(Math.abs(trend.delta), 1)} pp`;
 }
 
 /** Fold a card name for the search box, so "elsa snow" finds "Elsa - Snow Queen". */
@@ -86,7 +123,10 @@ function cardButton(name) {
  * Horizontal bar list. One hue, value at the tip, hairline baseline, and a table
  * twin behind a toggle.
  *
- * rows: [{label, inks?, value, valueText, note?, href?, tooltip?}]
+ * rows: [{label, inks?, value, valueText, after?, href?, tooltip?}]
+ *
+ * `valueText` is escaped; `after` is markup we built ourselves (a movement delta) and
+ * is inserted as-is. Nothing user-supplied may reach it.
  */
 function barChart(id, title, subtitle, rows, columns, options = {}) {
   const max = Math.max(...rows.map((r) => r.value), 0) || 1;
@@ -109,7 +149,9 @@ function barChart(id, title, subtitle, rows, columns, options = {}) {
           <div class="bar-row__track"><div class="bar-row__fill" style="width:${width.toFixed(
             2
           )}%"></div></div>
-          <div class="bar-row__value">${esc(row.valueText)}</div>
+          <div class="bar-row__value">${esc(row.valueText)}${
+            row.after ? `<span class="bar-row__after">${row.after}</span>` : ""
+          }</div>
         </${tag}>`;
     })
     .join("");
@@ -246,6 +288,61 @@ function allArchetypes(includeBrews = false) {
   return rows;
 }
 
+/**
+ * How much of the field this chart's bars actually account for.
+ *
+ * The ink-pair and single-ink charts cover every deck. This one does not: one-off
+ * brews are left out, and on a real field that is a quarter of it — 15 archetypes
+ * covering 74%, with 67 brews holding the other 26%. Saying only "67 brews are left
+ * out" gave the count but not the scale, so the three charts on this page appeared to
+ * disagree about the same field with no way to reconcile them.
+ *
+ * So state the arithmetic. A reader adding the bars up and getting 74% should find
+ * the missing 26% named here, not have to work out where it went.
+ */
+function brewCoverage() {
+  const shown = allArchetypes();
+  const all = allArchetypes(true);
+  const brews = all.length - shown.length;
+  if (!brews) return "Every deck in the field is in a chart below.";
+
+  const total = state.meta.totals.decks || 1;
+  const inBars = shown.reduce((sum, a) => sum + a.decks, 0);
+  const inBrews = total - inBars;
+  return `These ${num(shown.length)} archetypes are ${pct(
+    (100 * inBars) / total
+  )} of the field (${num(inBars)} of ${num(total)} decks). The rest — ${pct(
+    (100 * inBrews) / total
+  )}, ${num(inBrews)} decks — is ${num(brews)} one-off lists, seen once or twice each
+    and too small to be an archetype, so they are not charted here. The ink pair and
+    single ink charts below cover every deck.`;
+}
+
+/**
+ * One sentence explaining the Movement column, for the charts that carry it.
+ *
+ * The delta lives beside the share it belongs to rather than in a table of its own.
+ * A separate "what is moving" table meant two lists of the same decks with different
+ * memberships side by side - one ranked by share, one by movement, one mixing in ink
+ * pairs, one truncated - and the reader had to work out why they disagreed.
+ *
+ * The explanation still has to be here: "+4.1 pp" with nothing next to it invites the
+ * reader to assume a previous report it was measured against.
+ */
+function movementNote() {
+  const trend = state.meta.trend || {};
+  if (!trend.usable) {
+    return `<b>Movement is not shown</b> for this build: ${esc(
+      trend.reason || "the window could not be split"
+    )}.`;
+  }
+  return `<b>Movement</b> is this window cut in two at ${esc(trend.split)} - the back half
+    against the front half, not a comparison with a previous report. A row needs
+    ${num(trend.min_decks_per_row)} decks before it gets one; “–” means it has fewer.
+    Shares are relative, so one deck rising pushes the others down without anybody
+    playing them less.`;
+}
+
 function renderOverview() {
   const meta = state.meta;
   const { totals, period, pairs, inks, filters } = meta;
@@ -279,12 +376,14 @@ function renderOverview() {
     `Decks grouped by what is in them rather than what players called them, so one deck
      under five names counts once and two different decks sharing an ink pair count
      separately. Named after the cards that distinguish them.
-     ${brews ? `${num(brews)} one-off brews are left out of this chart.` : ""}`,
+     ${brewCoverage()}
+     ${movementNote()}`,
     archetypes.map((archetype) => ({
       label: archetype.label,
       inks: archetype.pair.inks,
       value: archetype.share_of_field,
       valueText: pct(archetype.share_of_field),
+      after: meta.trend.usable ? deltaText(archetype.trend) : "",
       href: `#/pair/${archetype.pair.key}/${archetype.key}`,
       tooltip: {
         title: archetype.label,
@@ -297,6 +396,7 @@ function renderOverview() {
             "Players called it",
             archetype.named_by_players.map((n) => n.name).join(", ") || "unnamed",
           ],
+          ...(meta.trend.usable ? [["Movement", deltaPlain(archetype.trend)]] : []),
         ],
       },
     })),
@@ -308,6 +408,15 @@ function renderOverview() {
         num: true,
         cell: (r) => num(archetypes.find((a) => a.label === r.label).decks),
       },
+      ...(meta.trend.usable
+        ? [
+            {
+              label: "Movement",
+              num: true,
+              cell: (r) => deltaPlain(archetypes.find((a) => a.label === r.label).trend),
+            },
+          ]
+        : []),
       {
         label: "Also known as",
         cell: (r) =>
@@ -327,6 +436,7 @@ function renderOverview() {
     inks: pair.inks,
     value: pair.share,
     valueText: pct(pair.share),
+    after: meta.trend.usable ? deltaText(pair.trend) : "",
     href: `#/pair/${pair.key}`,
     tooltip: {
       title: pair.label,
@@ -335,6 +445,7 @@ function renderOverview() {
         ["Decks", num(pair.decks)],
         ["Match win rate", pct(pair.record.win_rate)],
         ["Average placing", num(pair.record.avg_standing, 1)],
+        ...(meta.trend.usable ? [["Movement", deltaPlain(pair.trend)]] : []),
       ],
     },
   }));
@@ -342,7 +453,8 @@ function renderOverview() {
   const pairChart = barChart(
     "pairs",
     "Ink pair share of the field",
-    "Every deck that placed inside the cut, grouped by its two inks. Click a row for its card list.",
+    `Every deck that placed inside the cut, grouped by its two inks. Click a row for its
+     card list. ${movementNote()}`,
     pairRows,
     [
       { label: "Ink pair", cell: (r) => `${inkPairChips(r.inks)} ${esc(r.label)}` },
@@ -352,6 +464,15 @@ function renderOverview() {
         num: true,
         cell: (r) => num(pairs.find((p) => p.label === r.label).decks),
       },
+      ...(meta.trend.usable
+        ? [
+            {
+              label: "Movement",
+              num: true,
+              cell: (r) => deltaPlain(pairs.find((p) => p.label === r.label).trend),
+            },
+          ]
+        : []),
     ]
   );
 
@@ -360,11 +481,13 @@ function renderOverview() {
     inks: [ink.ink],
     value: ink.share,
     valueText: pct(ink.share),
+    after: meta.trend.usable ? deltaText(ink.trend) : "",
     tooltip: {
       title: ink.label,
       rows: [
         ["Decks playing it", num(ink.decks)],
         ["Share of decks", pct(ink.share)],
+        ...(meta.trend.usable ? [["Movement", deltaPlain(ink.trend)]] : []),
       ],
     },
   }));
@@ -372,7 +495,8 @@ function renderOverview() {
   const inkChart = barChart(
     "inks",
     "Single ink presence",
-    "How many decks play each ink at all. A two-ink deck counts towards both, so these sum to about 200%.",
+    `How many decks play each ink at all. A two-ink deck counts towards both, so these
+     sum to about 200%. ${movementNote()}`,
     inkRows,
     [
       { label: "Ink", cell: (r) => `${inkPairChips(r.inks)} ${esc(r.label)}` },
@@ -382,6 +506,15 @@ function renderOverview() {
         num: true,
         cell: (r) => num(inks.find((i) => i.label === r.label).decks),
       },
+      ...(meta.trend.usable
+        ? [
+            {
+              label: "Movement",
+              num: true,
+              cell: (r) => deltaPlain(inks.find((i) => i.label === r.label).trend),
+            },
+          ]
+        : []),
     ]
   );
 
@@ -479,13 +612,51 @@ function renderPair(arg) {
         record.top8_decks
       )} top-8 finishes`)}
       ${tile(
-        "Distinct cards played",
-        num(scope.cards.length),
-        variant ? "across this archetype's lists" : "across every list in the pair"
+        scope.cards.length ? "Distinct cards played" : "Lists in this group",
+        scope.cards.length ? num(scope.cards.length) : num(scope.decks),
+        scope.cards.length
+          ? variant
+            ? "across this archetype's lists"
+            : "across every list in the pair"
+          : "too few for inclusion rates"
       )}
+      ${
+        // Movement gets a tile only where there is a number; an empty tile beside four
+        // full ones reads as a failure rather than as an absence.
+        state.meta.trend.usable && scope.trend
+          ? tile(
+              "Movement in window",
+              deltaPlain(scope.trend),
+              `${pct(scope.trend.first_share)} → ${pct(scope.trend.second_share)}, split ${esc(
+                state.meta.trend.split
+              )}`
+            )
+          : ""
+      }
     </div>`;
 
-  const cardTable = `<section class="card">
+  // A brew carries no card table by design: for one or two decks, every card sits at
+  // 100% inclusion and the spread is a single bin, which is a decklist dressed up as
+  // an analysis. Say so rather than rendering an empty table.
+  const cardTable = !scope.cards.length
+    ? `<section class="card">
+        <div class="card__head"><h2>Card inclusion</h2></div>
+        <p class="subtitle">
+          ${
+            variant && variant.is_brew
+              ? `${
+                  scope.decks === 1
+                    ? "A one-off list"
+                    : `${num(scope.decks)} one-off lists`
+                } - too few for an inclusion rate to mean anything: every card would read
+                 100% and the copy spread would be a single bin. The tells above are what
+                 distinguishes ${scope.decks === 1 ? "it" : "them"}; the finishes below are
+                 where ${scope.decks === 1 ? "it" : "they"} came from.`
+              : "No card data in this scope."
+          }
+        </p>
+      </section>`
+    : `<section class="card">
       <div class="card__head"><h2>Card inclusion</h2></div>
       <p class="subtitle">
         Of the ${num(scope.decks)} ${esc(variant ? variant.label : pair.label)} decks, how many
@@ -563,16 +734,19 @@ function renderPair(arg) {
       </div>
     </section>`;
 
-  const shape = `<section class="card">
-      <div class="card__head"><h2>Curve and card types</h2></div>
-      <p class="subtitle">Average cards at each ink cost, per deck.</p>
-      ${costCurve(scope.cost_curve)}
-      <div class="legend">
-        ${(scope.type_mix || pair.type_mix)
-          .map((t) => `<span><b>${esc(t.type)}</b> ${num(t.avg_cards, 1)} cards</span>`)
-          .join("")}
-      </div>
-    </section>`;
+  // A brew has no curve either - one deck's curve is not a curve, it is that deck.
+  const shape = (scope.cost_curve || []).length
+    ? `<section class="card">
+        <div class="card__head"><h2>Curve and card types</h2></div>
+        <p class="subtitle">Average cards at each ink cost, per deck.</p>
+        ${costCurve(scope.cost_curve)}
+        <div class="legend">
+          ${(scope.type_mix || pair.type_mix)
+            .map((t) => `<span><b>${esc(t.type)}</b> ${num(t.avg_cards, 1)} cards</span>`)
+            .join("")}
+        </div>
+      </section>`
+    : "";
 
   const finishes = `<section class="card">
       <div class="card__head"><h2>Best finishes</h2></div>
@@ -697,21 +871,33 @@ function renderPair(arg) {
 
 function threatRows() {
   const filter = normalizeName(state.cardFilter);
-  return state.meta.threats.filter((threat) => {
+  const rows = state.meta.threats.filter((threat) => {
     if (state.typeFilter && threat.base_type !== state.typeFilter) return false;
     return !filter || normalizeName(threat.name).includes(filter);
   });
+  if (state.threatSort !== "movement") return rows;
+
+  // Rising fastest, and only cards that have a delta at all - sorting by movement
+  // would otherwise put every card the field is too thin to judge at the top, tied
+  // on nothing. They stay in the list, below the cards that actually moved.
+  const withDelta = rows.filter((threat) => threat.trend);
+  const without = rows.filter((threat) => !threat.trend);
+  withDelta.sort((a, b) => b.trend.delta - a.trend.delta);
+  return [...withDelta, ...without];
 }
 
 function renderThreats() {
   const rows = threatRows();
   const maxExpected = Math.max(...state.meta.threats.map((t) => t.expected_copies), 0.01);
+  const moving = state.meta.trend.usable;
 
   return `<h1>What you will actually face</h1>
     <p class="subtitle">
       Every card weighted by how popular the deck playing it is. <b>Expected copies</b> is how many
       copies sit in a deck drawn at random from this field - that is the number worth building tech
       against, because a four-of in a 5% deck matters less than a two-of in a 25% deck.
+      <b>Played by</b> names archetypes, not ink pairs: one Amber/Amethyst deck can run a card in
+      every list while another runs it in none, and the average of those two is a number nobody plays.
     </p>
     <div class="filters">
       <input type="search" id="card-search" placeholder="Filter cards…" value="${esc(
@@ -727,6 +913,19 @@ function renderThreats() {
           )
           .join("")}
       </select>
+      ${
+        moving
+          ? `<label for="threat-sort">Sort</label>
+             <select id="threat-sort">
+               <option value="expected"${
+                 state.threatSort === "movement" ? "" : " selected"
+               }>Expected copies</option>
+               <option value="movement"${
+                 state.threatSort === "movement" ? " selected" : ""
+               }>Rising fastest</option>
+             </select>`
+          : ""
+      }
     </div>
     <section class="card">
       <div class="table-wrap">
@@ -738,6 +937,7 @@ function renderThreats() {
               <th>Expected copies</th>
               <th class="num">When you do</th>
               <th class="num">Chance you meet it</th>
+              ${moving ? `<th class="num">Movement</th>` : ""}
               <th>Played by</th>
             </tr>
           </thead>
@@ -760,23 +960,14 @@ function renderThreats() {
                           threat.typical_copies ? `<b>${num(threat.typical_copies)}×</b>` : "–"
                         }</td>
                         <td class="num">${pct(threat.field_presence, 0)}</td>
-                        <td>${threat.pairs
-                          .slice(0, 3)
-                          .map(
-                            (p) =>
-                              `<a class="badge" href="#/pair/${esc(p.pair)}">${esc(
-                                p.label
-                              )} ${pct(p.inclusion, 0)}</a>`
-                          )
-                          .join(" ")}${
-                        threat.pair_count > 3
-                          ? ` <span class="badge">+${threat.pair_count - 3}</span>`
-                          : ""
-                      }</td>
+                        ${moving ? `<td class="num">${deltaText(threat.trend)}</td>` : ""}
+                        <td>${playedBy(threat)}</td>
                       </tr>`
                     )
                     .join("")
-                : `<tr><td colspan="6" class="empty">Nothing matches that filter.</td></tr>`
+                : `<tr><td colspan="${
+                    moving ? 7 : 6
+                  }" class="empty">Nothing matches that filter.</td></tr>`
             }
           </tbody>
         </table>
@@ -787,12 +978,76 @@ function renderThreats() {
         <span><b>When you do</b> how many copies the deck actually runs, once you are
           sitting across from it</span>
         <span><b>Chance you meet it</b> odds a random deck in this field runs at least one copy</span>
-        <span><b>Played by</b> the pairs running it, with their inclusion rate</span>
+        ${
+          moving
+            ? `<span><b>Movement</b> change in that chance between the halves of the window -
+                 what the field is picking up, whether or not any deck moved</span>`
+            : ""
+        }
+        <span><b>Played by</b> the archetypes running it, with their inclusion rate.
+          One-off lists are pooled per ink pair: each is a single deck, so every card in
+          it would read 100%</span>
       </div>
     </section>`;
 }
 
-/* ----------------------------------------------------------------- about */
+/**
+ * Which decks bring this card, most likely opponent first.
+ *
+ * Archetypes, not ink pairs. The pair-level version of this line was the last place
+ * in the report still averaging a card across decks that share only their inks, and on
+ * real data it produced "63.2%" where one archetype ran the card in every list and
+ * another in none.
+ */
+function playedBy(threat) {
+  const shown = threat.archetypes.slice(0, 3);
+  // From the real count, not the shipped list: the payload caps contributors, so
+  // subtracting from what arrived understates a staple spread across a dozen decks.
+  const rest = threat.contributor_count - shown.length;
+  const badges = shown
+    .map((group) => {
+      const label = `${esc(group.label)} ${pct(group.inclusion, 0)}`;
+      // A pooled group of brews is not a place you can navigate to.
+      return group.is_brews
+        ? `<span class="badge" title="${esc(
+            `${group.decks} one-off list(s) in ${group.pair_label}`
+          )}">${label}</span>`
+        : `<a class="badge" href="#/pair/${esc(group.pair)}" title="${esc(
+            `${group.inclusion}% of its ${group.decks} decks run it, ${group.typical_copies}x ` +
+              `typical - and this deck is ${group.share_of_field}% of the field`
+          )}">${label}</a>`;
+    })
+    .join(" ");
+  return badges + (rest > 0 ? ` <span class="badge">+${rest}</span>` : "");
+}
+
+function brewCount() {
+  return (state.meta.pairs || []).reduce(
+    (total, pair) => total + (pair.variants || []).filter((v) => v.is_brew).length,
+    0
+  );
+}
+
+/**
+ * Which build produced this report.
+ *
+ * A dirty tree is called out rather than glossed over: a report built with
+ * uncommitted changes cannot be reproduced from the commit it names, and a stamp that
+ * hides that is worse than no stamp, because it looks trustworthy.
+ */
+function buildStamp() {
+  // Read through `built_by` rather than aliasing it to a shorter local: the field is
+  // what the report promises, and `tests/test_report_shape.py` matches the access
+  // path. A local under a different name hides the read from that check - which is
+  // why `anomalies`, `totals` and `filters` are all named after their field too.
+  const built_by = state.meta.built_by || {};
+  if (!built_by.version && !built_by.commit) return "unknown";
+  const parts = [];
+  if (built_by.version) parts.push(`v${esc(built_by.version)}`);
+  if (built_by.commit) parts.push(esc(built_by.commit));
+  if (built_by.dirty) parts.push("+ uncommitted changes");
+  return parts.join(" · ");
+}
 
 function renderAbout() {
   const meta = state.meta;
@@ -811,15 +1066,40 @@ function renderAbout() {
         <div class="table-wrap"><table><tbody>
           <tr><td>Window</td><td class="num">${esc(meta.period.start)} → ${esc(
             meta.period.end
-          )}</td></tr>
+          )} (${num(meta.period.days)} days)</td></tr>
           <tr><td>Format</td><td class="num">${esc(meta.filters.format)}</td></tr>
           <tr><td>Placing cut</td><td class="num">top ${esc(meta.filters.top || "all")}</td></tr>
+          <tr><td>Event size floor</td><td class="num">${
+            meta.filters.min_players ? `${num(meta.filters.min_players)} players` : "none"
+          }</td></tr>
+          <!-- The threshold decides what counts as the same deck, so every archetype
+               number on the site moves with it. Showing it beats leaving the reader to
+               guess which knob produced 15 archetypes rather than 18. -->
+          <tr><td>Archetype similarity</td><td class="num">${num(
+            100 * (meta.filters.cluster_threshold || 0)
+          )}% card overlap</td></tr>
           <tr><td>Decklists fetched</td><td class="num">${num(
             meta.totals.decks_fetched
           )}</td></tr>
+          <tr><td>Decklists read</td><td class="num">${num(
+            meta.totals.decks_resolved
+          )}</td></tr>
           <tr><td>Decklists used</td><td class="num">${num(meta.totals.decks)}</td></tr>
           <tr><td>Events</td><td class="num">${num(meta.totals.tournaments)}</td></tr>
+          <tr><td>Cards detailed</td><td class="num">${num(
+            meta.totals.cards_described
+          )}</td></tr>
+          <tr><td>Movement split</td><td class="num">${
+            meta.trend.usable
+              ? `${esc(meta.trend.first.start)} → ${esc(meta.trend.first.end)} (${num(
+                  meta.trend.first.decks
+                )}) vs ${esc(meta.trend.second.start)} → ${esc(meta.trend.second.end)} (${num(
+                  meta.trend.second.decks
+                )})`
+              : "not shown"
+          }</td></tr>
           <tr><td>Built</td><td class="num">${esc(meta.generated_at)}</td></tr>
+          <tr><td>Built by</td><td class="num">${buildStamp()}</td></tr>
         </tbody></table></div>
       </section>
       <section class="card">
@@ -829,6 +1109,31 @@ function renderAbout() {
           <li>Only events on the source platform are counted. It is a sample of the meta, not a census.</li>
           <li>A standing with no submitted decklist contributes nothing, which can bias a field toward players who share lists.</li>
           <li>Inclusion rates say what people played, not what won. Win rate per pair is a small-sample number - treat it as a hint.</li>
+          <li>
+            ${
+              meta.trend.usable
+                ? `Movement is this window cut at ${esc(
+                    meta.trend.split
+                  )} - not a comparison with a previous report, and not enough halves to
+                   tell a trend from a busy weekend. A pair needs ${num(
+                     meta.trend.min_decks_per_row
+                   )} decks before it gets a delta at all.`
+                : `No movement is shown: ${esc(meta.trend.reason || "the window could not be split")}.`
+            }
+          </li>
+          <li>One-off lists (${num(
+            brewCount()
+          )} here, seen once or twice) keep their label, record and tells but carry no card
+          table or curve: with one deck every card sits at 100% inclusion, which is a
+          decklist wearing the clothes of an analysis.</li>
+          ${
+            meta.trend.usable && meta.trend.undated_decks
+              ? `<li>${num(
+                  meta.trend.undated_decks
+                )} deck(s) carry no event date, so they count towards every share but sit in
+                 neither half of the movement split.</li>`
+              : ""
+          }
           <li>${num(anomalies.unknown_card_count || 0)} unmatched card name(s), ${num(
             anomalies.short_decks || 0
           )} truncated list(s) and ${num(
@@ -926,10 +1231,40 @@ function hideTooltip() {
   tooltip().dataset.open = "false";
 }
 
-function showCard(name) {
+/**
+ * Where a card sits in this meta, for the inspector.
+ *
+ * The inspector used to show the printing and nothing else: cost, type, stats, rules
+ * text - everything you could read off the card itself, and none of what the report
+ * knows. You would click a card while deciding whether to tech against it and learn
+ * only what it does, never how much of the field runs it or whether that is growing.
+ *
+ * Returns null for a card outside the threat board (it lists the top 150), because
+ * saying nothing is better than implying it is played by nobody.
+ */
+function cardPosition(name) {
+  // Keyed by the report object, not just cached: a lookup that outlives the meta it
+  // was built from answers with the previous report's numbers, and nothing about the
+  // answer would look wrong.
+  if (!state.threatIndex || state.threatIndex.meta !== state.meta) {
+    state.threatIndex = {
+      meta: state.meta,
+      byName: new Map(state.meta.threats.map((threat) => [threat.name, threat])),
+    };
+  }
+  return state.threatIndex.byName.get(name) || null;
+}
+
+/**
+ * The inspector's markup for one card, or null if the report does not describe it.
+ *
+ * Split out from `showCard` so it can be tested without a DOM: what matters is what
+ * the panel says, and a test that stubs `getElementById` to capture an assignment is
+ * testing the plumbing instead.
+ */
+function inspectCard(name) {
   const info = state.meta.cards[name];
-  if (!info) return;
-  const inspector = $("#inspector");
+  if (!info) return null;
   const badges = [
     info.cost !== null ? `${info.cost} ink` : "",
     info.type,
@@ -941,7 +1276,45 @@ function showCard(name) {
     info.rarity,
   ].filter(Boolean);
 
-  $("#inspector-body").innerHTML = `
+  const position = cardPosition(name);
+  const meta = !position
+    ? `<p class="subtitle">Outside the top ${num(
+        state.meta.threats.length
+      )} cards of this field, so the report holds no field figures for it.</p>`
+    : `<div class="table-wrap"><table><tbody>
+        <tr><td>Chance you meet it</td><td class="num">${pct(
+          position.field_presence,
+          0
+        )}</td></tr>
+        <tr><td>Decks running it</td><td class="num">${num(position.decks)} of ${num(
+          state.meta.totals.decks
+        )}</td></tr>
+        <tr><td>When you do</td><td class="num"><b>${num(
+          position.typical_copies
+        )}×</b></td></tr>
+        <tr><td>Expected copies</td><td class="num">${num(
+          position.expected_copies,
+          2
+        )}</td></tr>
+        ${
+          state.meta.trend.usable
+            ? `<tr><td>Movement</td><td class="num">${deltaText(position.trend)}</td></tr>`
+            : ""
+        }
+      </tbody></table></div>
+      <p class="subtitle" style="margin-top:10px">Played by</p>
+      <div class="inspector__meta">${position.archetypes
+        .map((group) =>
+          group.is_brews
+            ? `<span class="badge">${esc(group.label)} ${pct(group.inclusion, 0)}</span>`
+            : `<a class="badge" href="#/pair/${esc(group.pair)}">${esc(group.label)} ${pct(
+                group.inclusion,
+                0
+              )}</a>`
+        )
+        .join("")}</div>`;
+
+  return `
     ${
       info.image
         ? `<img src="${esc(info.image)}" alt="${esc(name)}" loading="lazy" />`
@@ -951,8 +1324,15 @@ function showCard(name) {
     <div class="inspector__meta">${badges
       .map((b) => `<span class="badge">${esc(b)}</span>`)
       .join("")}</div>
-    ${info.text ? `<div class="inspector__text">${esc(info.text)}</div>` : ""}`;
-  inspector.hidden = false;
+    ${info.text ? `<div class="inspector__text">${esc(info.text)}</div>` : ""}
+    ${meta}`;
+}
+
+function showCard(name) {
+  const body = inspectCard(name);
+  if (body === null) return;
+  $("#inspector-body").innerHTML = body;
+  $("#inspector").hidden = false;
 }
 
 function attachEvents() {
@@ -1001,6 +1381,10 @@ function attachEvents() {
     }
     if (event.target.id === "fringe-toggle") {
       state.showFringe = event.target.checked;
+      render();
+    }
+    if (event.target.id === "threat-sort") {
+      state.threatSort = event.target.value;
       render();
     }
   });
@@ -1071,13 +1455,37 @@ function restoreTheme() {
  * block that on file://. When the tag is absent we are being served over HTTP and
  * fetch the JSON as normal.
  */
+/**
+ * Fill in blocks a report built by an older version does not have.
+ *
+ * A `meta.json` left on disk from a previous build is a normal thing to open, and
+ * several places read `meta.trend.usable` without asking first. A missing block would
+ * throw during render and leave a blank page - the one failure mode with no clue in
+ * it. Defaulting to "not shown, and here is why" degrades to the state the page
+ * already knows how to draw.
+ */
+function withDefaults(meta) {
+  if (!meta.trend) {
+    meta.trend = {
+      usable: false,
+      reason: "this report was built before movement existed - rebuild it to see it",
+      split: "",
+      first: { start: "", end: "", decks: 0 },
+      second: { start: "", end: "", decks: 0 },
+      undated_decks: 0,
+      min_decks_per_row: 0,
+    };
+  }
+  return meta;
+}
+
 async function loadMeta() {
   const inline = document.getElementById("meta-data");
-  if (inline) return JSON.parse(inline.textContent);
+  if (inline) return withDefaults(JSON.parse(inline.textContent));
 
   const response = await fetch(DATA_URL, { cache: "no-cache" });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
+  return withDefaults(await response.json());
 }
 
 async function boot() {
@@ -1102,4 +1510,8 @@ async function boot() {
   render();
 }
 
-boot();
+// Guarded so the file can be evaluated outside a browser. `tests/test_render.mjs`
+// loads this exact source and calls the renderers directly; without the guard it
+// would have to cut the call out with a regex, and a test that edits the code it
+// tests is testing something else.
+if (typeof document !== "undefined") boot();

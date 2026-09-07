@@ -104,6 +104,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import date
 from pathlib import Path
@@ -115,7 +116,7 @@ log = logging.getLogger(__name__)
 
 BASE = "https://inkdecks.com"
 #: The site's own tabs, and the path segment each one lists under. These are a
-#: different axis from a TopDeck format name: "Poorcana" is an inkdecks budget
+#: different axis from a Lorcana format name: "Poorcana" is an inkdecks budget
 #: category, and "all" has no equivalent elsewhere.
 CATEGORIES = {
     "all": "",
@@ -177,10 +178,17 @@ _CARD_HREF = re.compile(r"^/cards/details-")
 def _soup(html: str):
     try:
         from bs4 import BeautifulSoup
-    except ImportError as error:  # pragma: no cover - depends on the environment
+    except ImportError as error:
         raise SourceError(
-            "The inkdecks source needs beautifulsoup4 for HTML parsing.\n"
-            '  Install it with:  python -m pip install -e ".[inkdecks]"'
+            "\n".join(
+                [
+                    "beautifulsoup4 is not available to the interpreter running this "
+                    "build:",
+                    f"    {sys.executable}",
+                    "  Install it there:",
+                    f'    "{sys.executable}" -m pip install -e .',
+                ]
+            )
         ) from error
     return BeautifulSoup(html, "html.parser")
 
@@ -463,7 +471,8 @@ class InkdecksSource:
             if page > 1:
                 params["page"] = str(page)
 
-            html = self._get(path, params=params, cache_ttl=LIST_CACHE_TTL, cache_key=f"list-{self.rank or 'all'}-{start}-{end}-p{page}")
+            key = f"list-{self.rank or 'all'}-{start}-{end}-p{page}"
+            html = self._get(path, params=params, cache_ttl=LIST_CACHE_TTL, cache_key=key)
             if reported is None:
                 reported = total_decks(html)
 
@@ -542,7 +551,14 @@ class InkdecksSource:
 
     # -- transport -------------------------------------------------------------
 
-    def _get(self, path: str, *, params: dict | None = None, cache_ttl: int | None, cache_key: str) -> str:
+    def _get(
+        self,
+        path: str,
+        *,
+        params: dict | None = None,
+        cache_ttl: int | None,
+        cache_key: str,
+    ) -> str:
         cached = self._read_cache(cache_key, cache_ttl)
         if cached is not None:
             return cached
@@ -865,10 +881,9 @@ def parse_index_page(html: str) -> list[dict]:
                 player = value[3:].strip()
                 break
 
-        archetype = ""
-        muted = row.select_one("div.text-muted.small")
-        if muted:
-            archetype = muted.get_text(" ", strip=True)
+        # Their own archetype label ("Midrange", "Control") is deliberately not read.
+        # Archetypes here come from card overlap - see cluster.py - and carrying a
+        # second, differently-derived label would invite someone to trust it.
 
         # The format badge sits beside the set badge. Matched by its text rather than
         # its position, since "all" is the only case that needs it and a wrong guess
@@ -895,7 +910,6 @@ def parse_index_page(html: str) -> list[dict]:
                 "players": int(players.group(1)) if players else None,
                 "date": day.group(1) if day else "",
                 "inks": inks,
-                "archetype": archetype,
                 "format": deck_format,
             }
         )

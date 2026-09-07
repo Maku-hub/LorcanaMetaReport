@@ -29,9 +29,10 @@ without `--inkdecks-consent` / `INKDECKS_CONSENT=1`, and why it sets
 `publishable = False`.
 
 The condition is enforced rather than documented: `publishable` travels into the
-report, `tests/check_report.py` fails on it, and the Pages workflow runs that check
-before deploying. Three links in a chain, so no single edit quietly publishes
-someone else's data.
+report and `tests/check_report.py` fails on it, so any route that publishes has to be
+told to proceed past a failing check. The Pages workflow that used to run that check
+before deploying was itself deleted later (section 10) - the chain now has one fewer
+link because it has one fewer way out.
 
 **If you have no permission**, `tools/import_pasted_decks.py` takes a file of
 hand-copied lists (`### name | player | placing | event | date | attendance`) and
@@ -295,7 +296,266 @@ one hue at stepped opacity — an ordered scale, never hue carrying the order.
 
 ---
 
-## 9. Things deliberately not done
+## 9. The report was 868 KB, and 37% of it was working notes
+
+The whole `meta.json` is loaded by the browser and inlined into `report.html`, so
+anything in it that nothing reads is weight paid for on every open. A real 320-deck
+build was 868 KB. Two things were wrong with it.
+
+**Working fields shipped alongside the finished ones.** `avg_copies_overall` and
+`total_copies` existed to compute expected copies; `edge` and `is_character` to rank
+signature cards; `pair_share` to weight a threat. Every one of them is final by the
+time the report is written and none has a reader in `site/assets/app.js`. `_lean()`
+in `cli.py` strips them last, once every derived number exists, and prunes `cards`
+down to the printings something still points at.
+
+**Brews carried card tables that said nothing.** At the 0.60 threshold a real field
+is about 15 archetypes and 60-70 one-off lists. For a single deck, "inclusion" is
+100% on every card it plays and the copy spread is a single bin — that is a decklist
+wearing the clothes of an analysis, and it was 320 KB of the file. Brews keep their
+label, deck count, share, record, tells, player-submitted names and finishes; they
+lose the card table and the cost curve, and the About page says so with a count.
+
+Together: 868 KB → 541 KB, 38% smaller, with nothing removed that anything read.
+
+The trap here is that both halves are silent failures in opposite directions. Drop a
+field the page reads and you get a blank cell, not an error. Keep a field nothing
+reads and nothing ever tells you. So `tests/test_report_shape.py` holds both lines at
+once: every key in a built report must have a reader somewhere, and everything
+`_lean` strips must have no reader at all. Exceptions are enumerated by name with
+their consumer, because an unexplained exception is indistinguishable from a key
+nobody wants. It earned its place immediately — it caught a `min_decks_per_half`
+constant emitted for a page that never asked for it.
+
+---
+
+## 10. Movement: one window cut in half, and what that may not claim
+
+The report shows which decks are gaining and losing share. Three choices make that
+number honest rather than merely present.
+
+**Split by calendar date, not by deck count.** Halves of equal length are what "the
+back half of the window" means to a reader. Balancing on deck count instead would let
+a quiet weekend move the boundary, and would present two unequal stretches of time as
+if they were not.
+
+**Cluster once, over the whole window.** Clustering each half separately would leave
+the report matching archetypes across halves — which is the exact problem card
+overlap exists to avoid (§3), reintroduced for no gain. The clusters are built on the
+full window and their members are merely counted per side, so an archetype has one
+identity and both halves refer to the same thing.
+
+**Round before subtracting.** The delta on screen is the difference between the two
+percentages printed beside it. Subtracting raw shares and rounding afterwards leaves
+the displayed arithmetic off by a tenth, which reads as a bug to anyone who checks
+it — and someone always checks the one number they were about to act on.
+
+What it may not claim: it is not a comparison with a previous report, and a fortnight
+has weather. One large event landing in the second half moves every share in it. So
+deck counts sit next to every percentage, the section states the split in words, and
+movement is withheld rather than guessed at — under 15 decks in a half, or a window
+under 4 days, and there is no section, only a line saying which of those it was. A
+row needs 8 decks before it gets a delta at all: a deck seen three times can swing
+twenty points on one list. On a real 320-deck fortnight that leaves about nine rows
+with movement and seventy without, which is the honest picture.
+
+Withholding had to be checked as carefully as showing. `tests/check_report.py` now
+fails if the halves do not account for every deck, if a row carries a delta while the
+report says movement is unavailable, or if a delta is not the difference between its
+own two shares. All three were verified by breaking a good report on purpose.
+
+A side effect worth recording: writing the undated-deck test found that a single deck
+with no `tournament_date` had always crashed the whole build, in `_examples`, sorting
+`None` against a string. Neither real source omits the date, so nothing had hit it —
+but the paste importer can, and it is a `TypeError`, not a wrong number, so it takes
+the report with it.
+
+### Where the delta goes, and the chart that does not add up
+
+Movement first shipped as its own "What is moving" section: a table of the biggest
+movers, ranked by absolute delta. It was wrong next to the archetype chart. Two
+tables about the same decks stood side by side with different memberships - one
+ranked by share and one by movement, one mixing ink pairs in with archetypes, one
+truncated to twelve rows, one filtered by the 8-deck floor - and the reader was left
+to work out why they disagreed. The delta now sits in a **Movement** column beside
+the share it belongs to. One row per thing, in one place.
+
+Removing that section exposed a second problem, and a real one. The overview's three
+charts are three cuts of one field, so a reader will add one up and compare it with
+another. Two of them cover every deck. The archetype chart does not - brews are left
+out - and on a real 320-deck field that is **15 archetypes covering 74% against 67
+one-off lists holding the other 26%**. The subtitle said "67 one-off brews are left
+out of this chart", which gives the count and hides the scale: nothing on the page
+let you discover that the bars stopped at 74%.
+
+The chart now states the arithmetic. The fix was not to chart the brews - a single
+26% "brews" bar would rank near the top and read as though the biggest deck in the
+meta were a category - but to name the missing quarter where the reader meets it.
+
+`check_report.py` gained the reconciliation that must never drift: every deck in
+exactly one archetype of its pair, archetype shares of a pair summing to 100%, each
+ink's deck count equal to the pairs that ink appears in. Verified by breaking a good
+report four ways.
+
+One test lesson from the same pass: `test_report_shape.py` matched a key name
+anywhere in `app.js`, so `withDefaults()` - which *writes* defaults for an older
+report - made `undated_decks` look read when nothing read it. A reader-scan that
+counts writers is false assurance, which is the one thing that file exists to
+prevent. Its body is now excluded.
+
+---
+
+## 11. Deleting the publish workflow
+
+`.github/workflows/publish.yml` was manual-dispatch only, could publish `local` data
+only, and ran `check_report.py` before deploying. It was careful, and it is gone.
+
+It was the only mechanism in the repository that could make anything public, in a
+project whose requirement is a private report. Its safety rested on three guards
+holding simultaneously, and it had never been used once. Three guards protecting a
+capability nobody wants is not defence in depth; it is a thing that can go wrong for
+no benefit. `git log -- .github/workflows/publish.yml` has it if a public page from
+redistributable decklists is ever actually wanted.
+
+`ruff check` moved into CI in the same pass, as a separate single-platform job: lint
+results do not vary by OS, and a style complaint must not be able to hide a real test
+failure in the matrix. The linter is pinned — an unpinned one turns someone else's
+release into your red build. It had already earned its keep: it was a linter, not a
+test, that found the `NameError: name 'sys' is not defined` a `git checkout` left in
+two of the inkdecks error handlers (§6).
+
+---
+
+## 12. Testing the page, and two tests that were lying
+
+The presentation layer was the last untested thing in the project: 1300 lines of
+`site/assets/app.js`, the entire readable surface of the report, verified by opening
+it and looking. Every page bug in this project was found that way - an empty "Curve
+and card types" card on a brew, "A one-off lists" for two decks, an archetype chart
+whose bars stopped at 74% of the field in silence, a missing movement block throwing
+during render and leaving a blank page. That last one is the worst failure this
+project has, because a blank page carries no clue at all.
+
+`tests/test_render.mjs` closes it. Plain node, no npm, no packages: it evaluates
+`app.js` and calls the renderers. The one change to production code was replacing the
+bare `boot()` at the end with `if (typeof document !== "undefined") boot();` - a test
+that has to cut a call out of the file with a regex is testing something else.
+
+It loads the built report once and mutates copies in memory to reach states a sample
+field may not contain - a brew, a report with no `trend` block, an empty field, an
+unknown route. A test that quietly skips when the field lacks a brew is not a test.
+
+Eleven deliberate breakages, eleven caught. The first version caught only ten: the
+movement check looked for a `Movement` column *header* and a mutation that emptied
+every cell under it passed. A column of blanks is precisely the silent failure being
+guarded against, so the helper now returns the first data row too.
+
+### Two checks that approved things by coincidence
+
+`test_report_shape.py` matched a key name anywhere in `app.js`. Two consequences, both
+found by looking rather than by the test failing:
+
+* `withDefaults()` *writes* defaults for a report built before movement existed, so it
+  mentions every field it fills. That made `undated_decks` look read when nothing read
+  it. A reader-scan that counts writers is false assurance - the one thing that file
+  exists to prevent. Its body is excluded now.
+* `totals.variants` has no reader in the page at all, but `pair.variants` does, so the
+  name matched and the field was approved by accident. It turned out to be legitimate
+  - `check_report.py` reads it - but the approval was luck, not reasoning. Matching is
+  now by access path, and `READ_ELSEWHERE` is keyed by full path so an exemption
+  cannot silently cover a same-named field elsewhere.
+
+Where the parent is a list element (`pairs[].variants`) the chain is broken by the
+indexing and cannot be matched without parsing the JavaScript, so those still fall
+back to the name. The convention that makes path matching work is already in the file:
+name a local after its field, as `anomalies`, `totals` and `filters` all do.
+
+### The report now says what built it
+
+It recorded the window, the placing cut and the clustering threshold - everything
+about the *question* - and nothing about the code that answered it. A `report.html`
+gets opened weeks later, and "which build produced this" was the first thing you would
+want and the one thing it could not tell you. `built_by` carries the package version,
+the short commit, and whether the tree was dirty.
+
+`dirty` is the point of it. A report built from a working tree with uncommitted
+changes cannot be reproduced from the commit it names, and a stamp that hides that is
+worse than no stamp because it looks trustworthy. Git being absent is not an error - an
+install from a wheel has no repository - and the stamp reads "unknown" rather than
+inventing one.
+
+---
+
+## 13. The threat board was averaging the thing this project exists not to average
+
+Section 3 is about why archetypes come from card overlap: 56 decks sharing
+Amber/Amethyst were 7 different decks, and averaging a card across them produces a
+number nobody plays. The threat board was doing exactly that, in the one view whose
+whole job is "what should I prepare for".
+
+On real data it read **"Maleficent - Vengeful Sorceress, played by Amber/Amethyst
+63.2%"**. Inside that pair, one archetype ran it in every list and the other ran it in
+none. 63.2% invites preparing for a coin flip when the truth is "one deck always has
+it, the other never does" - and which one is across the table is precisely what the
+signature cards tell you. The README already claimed card figures were computed within
+an archetype; for this view that was not true.
+
+Three things came out of fixing it.
+
+**The attribution moved to archetypes, and brews had to be pooled.** Brews carry no
+card table in the report (§9), so an attribution assembled from the report alone would
+have lost a quarter of a real field, invisibly. They are pooled per ink pair instead:
+one contributor row saying "One-off lists (Amber/Amethyst)". Listing them individually
+would be worse than useless - each is a single deck, so every card in it reads 100%
+inclusion, and thirty such rows would bury the decks worth preparing for.
+
+**`expected_copies` and `field_presence` now come straight off the field.** They were
+weighted sums over ink pairs, which was *exact* - pairs partition the field, so the
+weights collapse to "copies in the field over decks in the field" - but it made the
+numbers look grouping-dependent when they are not. The existing test's assertions did
+not change by a digit, which is the proof the identity held.
+
+**The thin-pair filter moved into `build_meta`.** It used to run afterwards in
+`cli.py`, walking back over a finished report re-deriving every share and rebuilding
+the threat board against a new denominator: two chances to leave a number quoted
+against a field that no longer existed. Dropping first and computing once removed the
+function entirely.
+
+### Cards carry movement, and one bug the tests found on the way
+
+An archetype rising tells you which deck to prepare for. A card rising tells you what
+to prepare for regardless of which deck brings it, and that can happen with no
+archetype moving at all - so cards get the same window split and the same row floor.
+
+`test_report_shape.py` then flagged `archetype_count` as having no reader, which
+turned out to be a display bug rather than dead weight. The contributor list is capped
+at six for size, and the page computed its "+N more" badge from the shipped list - so
+a staple played by fifteen archetypes advertised "+3". The field is now
+`contributor_count`, the badge reads from it, and a synthetic 15-archetype field
+confirmed +12 where the old code said +3.
+
+Two of the new page tests passed against deliberately broken code before being
+tightened, and both failures were the same shape: asserting that a word appears
+somewhere rather than that the thing works. `html.includes("Movement")` passed with
+the column deleted, because the legend below the table also says "Movement"; the
+inspector test called the lookup function directly and passed with the inspector
+rendering none of what it returned. The fixes were to assert the `<th>` specifically,
+and to split `inspectCard` out of `showCard` so the markup can be checked without a
+DOM.
+
+### Printing
+
+`@media print` hid the toolbar and stopped there, so printing produced a page of empty
+rectangles: every bar is a div with a background, and browsers drop backgrounds when
+printing. The marks now force `print-color-adjust`, cards and chart rows avoid page
+breaks, table headers repeat across pages, the palette is forced light so a dark-theme
+report does not print white on white, and external links print their destination.
+The block also had to move to the end of the stylesheet - a media query carries no
+extra specificity, so the ordinary rules that followed it were quietly winning.
+
+---
+
+## 14. Things deliberately not done
 
 - **No scraping of any site whose terms forbid it without permission.** Ask, or copy
   by hand.
@@ -305,6 +565,16 @@ one hue at stepped opacity — an ordered scale, never hue carrying the order.
   command did not include is worse than a slightly larger install.
 - **No wrapper scripts.** There were four PowerShell ones; they duplicated the CLI,
   drifted from it, and doubled the surface to keep working. One way to run it.
+- **No publish workflow.** See §11.
+- **No card tables for one-off brews.** See §9. They keep everything that identifies
+  them; they lose statistics that a single deck cannot support.
+- **No npm, and no test framework.** `test_render.mjs` is plain node calling plain
+  functions (§12). A dependency that has to be installed before a test runs is a
+  dependency that stops the test being run.
+- **No month-over-month comparison.** Movement is one window split in two (§10).
+  Comparing with a previous run would mean storing past reports and reconciling
+  archetype identity across them - two new problems for a number the split already
+  answers.
 - **No regex parsing of the site's HTML structure.** bs4, matched by content.
 - **No committing of full pages from inkdecks.** Fixtures are trimmed excerpts;
   permission to read a site is not permission to redistribute it.

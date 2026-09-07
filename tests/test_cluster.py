@@ -20,8 +20,8 @@ from lorcana_meta.cluster import (  # noqa: E402
     signature_cards,
     similarity,
 )
-from lorcana_meta.models import Card, Deck, ResolvedDeck  # noqa: E402
 from lorcana_meta.console import configure_output  # noqa: E402
+from lorcana_meta.models import Card, Deck, ResolvedDeck  # noqa: E402
 
 FAILURES: list[str] = []
 
@@ -44,8 +44,6 @@ def card(name, cost=3, type_="Character"):
         text="",
         image="",
         set_id="TFC",
-        set_name="The First Chapter",
-        unique_id=name[:3].upper(),
         rarity="Common",
     )
 
