@@ -944,6 +944,15 @@ Two details worth keeping:
   be clicked, and a caveat that only exists behind a toggle is worse on paper than one
   in the subtitle.
 
+And the check for those notes broke CI on the first push, which is worth recording
+because the trap is this file's own advice. Most of the notes only appear when
+something is true of the field - there are brews, a cut separates nothing at some
+events, some bracket labels cannot be judged. The test asserted them against whatever
+the last build happened to contain, and the last build here was a real inkdecks report
+where all three are true. On the sample field CI builds from, none of them are. Every
+condition is forced by mutation now, exactly as the header of `test_render.mjs` says
+it should be, and the test passes on both fields.
+
 ### A flag that looked like it did something
 
 `--format` defaulted to "Core Constructed" and was then overridden by

@@ -1052,19 +1052,15 @@ function test_the_chart_says_when_its_order_is_not_a_ranking() {
 }
 
 /**
- * The caveats moved off the subtitles, and none of them left the page.
+ * No subtitle is a wall of text.
  *
- * They had grown to 331 words above one bar chart and 637 across the overview, a
- * sentence at a time, each individually earned. When everything is caveated at the
+ * The caveats had grown to 331 words above one bar chart and 637 across the overview,
+ * a sentence at a time, each individually earned. When everything is caveated at the
  * same weight the ones that change how you read the chart are lost among the ones
  * that do not, so they now sit behind a disclosure - on the page, one click away.
- *
- * This test exists because the tempting way to shorten a wall of text is to delete
- * it, and every one of these sentences is load-bearing.
  */
-function test_the_caveats_left_the_subtitles_without_leaving_the_page() {
-  const meta = report();
-  const html = render(meta, "");
+function test_no_subtitle_is_a_wall_of_text() {
+  const html = render(report(), "");
   const subtitles = [...html.matchAll(/<p class="subtitle">([\s\S]*?)<\/p>/g)].map((m) =>
     prose(m[1].replace(/<[^>]+>/g, " ")).trim()
   );
@@ -1073,26 +1069,54 @@ function test_the_caveats_left_the_subtitles_without_leaving_the_page() {
     const words = subtitle.split(" ").filter(Boolean).length;
     check(
       words <= 120,
-      `no subtitle is a wall of text, found one of ${words} words: ${subtitle.slice(0, 90)}…`
+      `found a subtitle of ${words} words: ${subtitle.slice(0, 90)}…`
     );
   }
-
-  // Every explanation is still reachable, in a disclosure rather than a footnote.
   check(
     (html.match(/<details class="notes">/g) || []).length >= 3,
-    "each chart carries its notes"
+    "each chart carries a notes disclosure"
   );
-  const readable = prose(html);
-  for (const phrase of [
-    "judged lists a rate needs",       // what the rate floor excludes
-    "95% interval",                    // why the interval is there
-    "in it for free",                  // the cut's own bias, measured
-    "knockout brackets",               // why some decks cannot be judged
-    "already placed",                  // the win rate's sample
-    "one-off lists",                   // what the archetype chart leaves out
-    "cut in two",                      // what movement is
-  ]) {
-    check(readable.includes(phrase), `"${phrase}" is still on the page`);
+}
+
+/**
+ * Every caveat is still reachable, with the condition that produces it forced.
+ *
+ * The tempting way to shorten a wall of text is to delete it, and each of these
+ * sentences is load-bearing - so each is checked for. Forced rather than looked for:
+ * most of them only appear when something is true of the field, and a first version
+ * of this test asserted them against whatever the last build happened to contain. It
+ * passed on a real inkdecks report, where brews, vacuous cuts and unjudgeable
+ * bracket labels all exist, and failed on the sample field, where none of them do -
+ * which is the trap this file's own header warns about.
+ */
+function test_every_caveat_is_reachable_when_it_applies() {
+  // Conditions the sample field does not produce: a brew, a cut that separates
+  // nothing at some events, and decks no cut can place.
+  const meta = report((r) => {
+    const pair = r.pairs[0];
+    const variant = pair.variants[pair.variants.length - 1];
+    Object.assign(variant, { is_brew: true, decks: 1, cards: [], cost_curve: [] });
+    r.results.cuts = r.results.cuts.map((cut) => ({
+      ...cut,
+      usable: true,
+      decks: Math.max(cut.decks, 20),
+      vacuous_events: 3,
+      unknown: 7,
+    }));
+  });
+  const readable = prose(render(meta, ""));
+
+  const required = {
+    "one-off lists": "what the archetype chart leaves out",
+    "judged lists a rate needs": "what the rate floor excludes",
+    "95% interval": "why the interval is there",
+    "in it for free": "the cut's own bias, measured",
+    "knockout brackets": "why some decks cannot be judged",
+    "already placed": "the win rate's sample",
+    "cut in two": "what movement is",
+  };
+  for (const [phrase, why] of Object.entries(required)) {
+    check(readable.includes(phrase), `"${phrase}" (${why}) is still on the page`);
   }
 }
 
@@ -1145,7 +1169,8 @@ const tests = Object.entries({
   test_every_charted_rate_shows_its_interval,
   test_a_report_without_denominators_is_not_ranked,
   test_the_chart_says_when_its_order_is_not_a_ranking,
-  test_the_caveats_left_the_subtitles_without_leaving_the_page,
+  test_no_subtitle_is_a_wall_of_text,
+  test_every_caveat_is_reachable_when_it_applies,
   test_print_opens_every_disclosure,
 });
 
