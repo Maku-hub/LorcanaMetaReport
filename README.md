@@ -17,6 +17,7 @@ single local file, or publish it to GitHub Pages.
 |---|---|
 | **Meta** | Which archetypes and ink pairs the field is made of, and how much of it each one is. |
 | **Archetype page** | For one deck: which cards are core (80%+ of lists run them), which are flex, **how many copies most lists run and whether they agree**, the curve, the best finishes, and every name players submitted it under. |
+| **What is winning** | Archetypes by their share of the top finishes against their share of the field, under a cut you choose. |
 | **What you'll face** | Every card ranked by **expected copies**, with the archetypes that bring it and whether the field is picking it up. This is the list to build tech against. |
 | **Movement column** | Beside every share on all three overview charts — archetype, ink pair and single ink: what gained or lost ground between the two halves of the window. |
 
@@ -108,6 +109,92 @@ On the threat board, `expected copies` stays a true expectation over the whole f
 fractional by design, and the right thing to rank by — with the modal count beside it
 answering "and when I do meet that deck, how many is it running".
 
+### What is played and what is winning are different questions
+
+Share of the field tells you what you will sit across from. It does not tell you what
+wins, and on a real field the two disagree sharply: in a 62-deck field the most played
+archetype held **19.4% of the field and 11.1% of the top-8 finishes**, with the lowest
+match win rate on the board. The deck to expect, not the deck to beat. Every ranking
+in this report used to be the popularity one.
+
+So the overview carries a results axis too: **how often each archetype's lists reach
+the top finishes**, which is the one chart here ranked on results rather than on how
+many people played a deck.
+
+It is ranked on that rate and not on a share of the winners, and the difference
+matters. A share of the winners puts the largest archetype first for being largest —
+on a real field the leader under that ranking was a deck taking *less* of the top
+finishes than its share of the field, sitting at the top of a chart headed "what is
+winning". The gap between the two shares is kept as a column, because "over- or
+under-represented" is worth knowing, but it spans only −1.7 to +3.6 points across 23
+archetypes and it correlated worse with an outside win rate (+0.56 against the rate's
++0.79) on the one external check available.
+
+Everything a chart needs qualified stays on the page, behind a **"How to read this,
+and what it leaves out"** disclosure rather than in the subtitle. The caveats had grown
+to 331 words above one bar chart and 637 across the overview, a sentence at a time, and
+when everything is caveated at the same weight the ones that change how you read the
+chart are lost among the ones that do not. The subtitle now keeps only what you must
+read to not misread it. Printing forces every disclosure open, because paper cannot be
+clicked.
+
+**The chart also says how much of its own order the data supports.** A sorted bar
+chart reads as a ranking whether or not one exists, and on a real 837-deck field over
+three weeks *every* charted archetype's interval overlapped the leader's — not one was
+measurably worse. So the chart says exactly that, and calls itself a shortlist rather
+than a league table. Where a real gap exists it counts how many archetypes are clearly
+behind the leader instead.
+
+**Every rate carries its 95% interval**, and that is not decoration. 40% from 25 lists
+spans 23–59%; 37.5% from 8 lists spans 14–69%. Two archetypes differ only when their
+intervals do not overlap, and the chart says so. A rate needs 8 judged lists before it
+is charted at all — one real archetype held three lists and converted all three, which
+sorts straight to the top of anything ranked on rate. What the floor leaves out is
+counted, along with the share of the field the charted archetypes speak for.
+
+**The cut is yours to pick.** Event wins, top 8, top 10% or top 25%, because neither
+kind of cut is neutral:
+
+* an absolute cut ("top 8") is the same eight places everywhere, so making it at a
+  24-player store event counts the same as at a 210-player regional — it over-credits
+  small events;
+* a percentage cut ("top 10%") normalises for event size, but it interacts with
+  `--top N`: where the fetched cut is deeper than the percentage, a large event
+  contributes nearly every deck it has while a small one contributes only its winners
+  — it over-credits large events.
+
+The report measures that second effect rather than describing it. Each cut reports how
+many of the events it **excludes nothing** from; a cut that separates nothing at half
+the events is a cut that hands those decks to "the winners" for free, and the page says
+so. On a real-shaped field top 10% excluded decks at every event while top 25% held two
+thirds of the field and separated nothing at half of them, which is why the default is
+top 10% and why top 25% arrives with a warning attached.
+
+Three more things this axis is careful about:
+
+* **A cut too thin to read is withheld.** With three decks in it every archetype in it
+  is a third of "the winners". Ten decks minimum, and the reason is printed.
+* **A placing is a range.** inkdecks names 1st, 2nd and 3rd and publishes knockout
+  brackets for everything else, and those brackets are disjoint: a deck shown as
+  "Top8" went out in the quarter-finals, so it finished 5th to 8th. Both ends of the
+  range decide a cut, and a cut that falls *inside* a bracket has no answer for the
+  decks in it — those are counted, shown, and left out of the conversion rate rather
+  than counted as failures. A cut on a bracket boundary leaves none: on a real field
+  the top-8 cut placed every one of 842 decks, while top 10% left 68 unplaceable.
+* **Everything here is conditional on making the fetched cut.** With `--top 32` the
+  report only ever sees top-32 decks, so conversion is which of the decks already
+  doing well went furthest — not a win rate against a whole tournament.
+
+What the report deliberately does not do is separate the deck from the pilot. An
+archetype can be over-represented in the top finishes because good players chose it.
+The win rate beside every share is **not** how often a deck wins. Every list in this
+report finished inside the fetched cut, so it is a win rate among decks that already
+placed: uniformly high and squeezed together. Measured against inkdecks' own matrix,
+which counts every match in the same events over the same window, these figures ran
+**11 points high in every ink pair without exception**, and 34 points of real spread
+arrived as 8. They are labelled `Win rate, top-N lists` for that reason, and they are
+worth reading against each other and never as an absolute.
+
 ### The threat board names decks, not ink pairs
 
 Every card is ranked by **expected copies** — how many sit in a deck drawn at random
@@ -179,11 +266,11 @@ syntax and PowerShell reads it as a command name.
 ```bash
 python tools/generate_sample_decks.py
 lorcana-meta build --source local --last 40
-python tools/bundle_report.py
 ```
 
-That writes `report.html`. Open it — no server, no hosting, nothing leaves your
-machine. The sample field uses real card names but invented decks, players and
+That writes `site/data/meta.json` and `report.html`. Open the second one — no
+server, no hosting, nothing leaves your machine. Every build writes it; pass
+`--no-bundle` if you only want the data. The sample field uses real card names but invented decks, players and
 events, and the report says so on its own front page.
 
 ### Build from inkdecks
@@ -197,7 +284,6 @@ $env:INKDECKS_CONSENT = "1"                     # PowerShell, this window
 [Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")   # and future ones
 
 lorcana-meta build --last 14 --top 32
-python tools/bundle_report.py
 ```
 
 `inkdecks` is the default source, so `--source` is optional. Set the environment
@@ -249,7 +335,7 @@ source:
 
 ```powershell
 $cmd = "cd C:\path\to\repo; .\.venv\Scripts\lorcana-meta.exe build --last 30 --top 32; " +
-       ".\.venv\Scripts\python.exe tools\bundle_report.py"
+       ".\.venv\Scripts\lorcana-meta.exe build --last 30 --top 32"
 $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$cmd`""
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 07:00
 Register-ScheduledTask -TaskName LorcanaMetaReport -Action $action -Trigger $trigger `
@@ -259,7 +345,7 @@ Register-ScheduledTask -TaskName LorcanaMetaReport -Action $action -Trigger $tri
 cron:
 
 ```cron
-0 7 * * 1  cd /path/to/repo && .venv/bin/lorcana-meta build --last 30 --top 32 && .venv/bin/python tools/bundle_report.py
+0 7 * * 1  cd /path/to/repo && .venv/bin/lorcana-meta build --last 30 --top 32
 ```
 
 Use the absolute path to the venv rather than trusting `PATH` inside the scheduler's
@@ -283,7 +369,6 @@ environment. Set `INKDECKS_CONSENT` at user level so the task inherits it.
 
 ```bash
 lorcana-meta build --last 30 --top 32
-python tools/bundle_report.py
 ```
 
 `report.html` carries the CSS, the JavaScript and the data inline. It opens straight
@@ -322,8 +407,7 @@ reaching a public URL.
 ### Private and automated
 
 Use Windows Task Scheduler and the single-file bundle. A scheduled task running
-`lorcana-meta build` then `python tools/bundle_report.py` leaves `report.html` on your
-disk with nothing published anywhere — see [On a schedule](#on-a-schedule).
+`lorcana-meta build` leaves `report.html` on your disk with nothing published anywhere — see [On a schedule](#on-a-schedule).
 
 ---
 
@@ -371,7 +455,7 @@ lorcana-meta build --start 2026-08-01 --end 2026-08-27
 lorcana-meta build --last 60 --top 1 --cluster-threshold 0.75
 ```
 
-The rest of the tooling: `tools/bundle_report.py` (single-file report),
+The rest of the tooling: `tools/bundle_report.py` (re-bundle without refetching),
 `tools/generate_sample_decks.py` (synthetic field), `tools/import_pasted_decks.py`
 (see below), and `tests/check_report.py` (sanity-check a built report).
 
@@ -407,7 +491,6 @@ So the source exists, and it refuses to run until you confirm you have that cons
 ```bash
 export INKDECKS_CONSENT=1        # PowerShell: $env:INKDECKS_CONSENT = "1"
 lorcana-meta build --last 14 --top 32
-python tools/bundle_report.py
 ```
 
 `--inkdecks-category` mirrors the tabs on their listing page — `core` (default),

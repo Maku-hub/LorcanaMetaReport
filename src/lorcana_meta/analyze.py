@@ -21,6 +21,7 @@ The numbers this module produces, and what a player is meant to do with them:
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -52,6 +53,14 @@ MIN_TREND_DECKS_PER_HALF = 15
 #: Below this the delta is arithmetic on two or three lists, which reads as a trend
 #: and is not one.
 MIN_TREND_ROW_DECKS = 8
+
+#: Which result cut the report opens on. A percentage rather than a fixed eight
+#: places, because "top 8" of a 24-player store event and of a 210-player regional are
+#: not the same achievement and averaging them credits the small event. Measured on a
+#: real-shaped field, top 10% held 22 of 62 decks and excluded decks at every event,
+#: while top 25% held two thirds of the field and excluded nothing at half the events.
+#: Every cut is one click away and each states its own bias on the page.
+DEFAULT_CUT = "top10pct"
 
 
 @dataclass
@@ -284,6 +293,182 @@ def _record(group: list[ResolvedDeck]) -> dict:
     }
 
 
+#: The result cuts the report offers, coarsest last. Everything else in the report is
+#: a popularity axis - how many people played a deck - and none of it says whether the
+#: deck won anything. These are the results axis, and the reader picks the one they
+#: trust, because each is biased in a different direction and neither is neutral:
+#:
+#: * an absolute cut ("top 8") is the same eight places at every event, so making it
+#:   at a 24-player store event counts the same as at a 210-player regional. It
+#:   over-credits small events.
+#: * a percentage cut ("top 10%") normalises for how big the event was, but it
+#:   interacts with `--top N`: if the fetched cut is deeper than the percentage, a
+#:   large event contributes nearly every deck it has to the cut while a small one
+#:   contributes only its winners. It over-credits large events.
+#:
+#: `vacuous_events` per cut measures exactly that, so the effect is on the page rather
+#: than in a footnote nobody reads.
+RESULT_CUTS = (
+    {"key": "top1", "label": "Event wins", "places": 1, "fraction": None},
+    {"key": "top10pct", "label": "Top 10%", "places": None, "fraction": 0.10},
+    {"key": "top8", "label": "Top 8", "places": 8, "fraction": None},
+    {"key": "top25pct", "label": "Top 25%", "places": None, "fraction": 0.25},
+)
+
+#: Decks a cut needs before shares of it mean anything. Three decks in the cut makes
+#: every archetype in it a third of "the winners".
+MIN_CUT_DECKS = 10
+
+
+#: Lists an archetype needs before its conversion rate is charted. The same eight as
+#: the movement floor, and for the same reason: a rate on three lists is arithmetic,
+#: not a finding. One archetype in a real field held 3 decks and converted all three,
+#: which sorts to the top of anything ranked on rate.
+MIN_RATE_DECKS = MIN_TREND_ROW_DECKS
+
+
+def _wilson(successes: int, trials: int) -> tuple[float, float]:
+    """A 95% interval for a rate, as percentages.
+
+    Wilson rather than the textbook normal interval, because these samples are small
+    and often near 0% or 100%, where the normal interval runs past the ends and gives
+    a lower bound below zero.
+
+    The report needs this because the results axis ranks archetypes on a rate: 40%
+    from 25 lists and 37.5% from 8 look like a close call and are not - the first
+    spans 23-59%, the second 14-69%. Printing the rate alone would trade one
+    misleading ranking for another.
+    """
+    if trials <= 0:
+        return 0.0, 0.0
+    z = 1.96
+    rate = successes / trials
+    denominator = 1 + z * z / trials
+    centre = (rate + z * z / (2 * trials)) / denominator
+    spread = (
+        z * ((rate * (1 - rate) / trials + z * z / (4 * trials * trials)) ** 0.5)
+    ) / denominator
+    return (
+        round(100.0 * max(0.0, centre - spread), 1),
+        round(100.0 * min(1.0, centre + spread), 1),
+    )
+
+
+def _cut_threshold(cut: dict, deck: Deck) -> int | None:
+    """How many places this cut covers at the event that deck played in."""
+    if cut["places"] is not None:
+        return cut["places"]
+    players = deck.tournament_players
+    if not players or players < 1:
+        return None
+    return max(1, math.ceil(players * cut["fraction"]))
+
+
+def _in_cut(item: ResolvedDeck, cut: dict) -> bool | None:
+    """Did this deck make the cut? `None` means the result cannot say.
+
+    A placing is a range: exact for "3rd", and a knockout bracket otherwise, so
+    "Top8" is 5th-8th. Both ends matter. If the worst end is still inside the cut the
+    deck is in; if the best end is already outside it, the deck is out; and if the
+    bracket straddles the line, "cannot tell" is the honest answer and has to stay
+    separate from "no".
+
+    Reading only the worst end - which this did at first - meant nothing could ever
+    be placed *outside* a cut. On a real 842-deck field that left 514 decks
+    unjudgeable for a top-8 cut and made every event look as though the cut excluded
+    nothing at all.
+    """
+    worst = item.deck.standing
+    if worst is None:
+        return None
+    threshold = _cut_threshold(cut, item.deck)
+    if threshold is None:  # a percentage cut with no field size to apply it to
+        return None
+    if worst <= threshold:
+        return True
+    best = item.deck.standing_best
+    if best is None:
+        # A source that gave no range can only place a deck outside a cut when it
+        # said the placing was exact. Assuming a point would invent precision.
+        return False if item.deck.standing_exact is True else None
+    if best > threshold:
+        return False
+    return None  # the bracket straddles the cut
+
+
+def _cut_totals(field: list[ResolvedDeck]) -> dict[str, dict]:
+    """Per cut, over the whole field: what is in it, and what it could not judge."""
+    by_event: dict[str, list[ResolvedDeck]] = defaultdict(list)
+    for item in field:
+        by_event[item.deck.tournament_id or item.deck.tournament_name].append(item)
+
+    totals = {}
+    for cut in RESULT_CUTS:
+        verdicts = [(item, _in_cut(item, cut)) for item in field]
+        inside = sum(1 for _item, verdict in verdicts if verdict is True)
+        unknown = sum(1 for _item, verdict in verdicts if verdict is None)
+
+        # An event where the cut excludes nothing we hold is an event the cut says
+        # nothing about - every deck from it lands in "the winners" for free.
+        vacuous = 0
+        for members in by_event.values():
+            judged = [_in_cut(item, cut) for item in members]
+            if judged and all(verdict is not False for verdict in judged):
+                vacuous += 1
+
+        totals[cut["key"]] = {
+            "key": cut["key"],
+            "label": cut["label"],
+            "decks": inside,
+            "share_of_field": _pct(inside, len(field)),
+            "unknown": unknown,
+            "vacuous_events": vacuous,
+            "events": len(by_event),
+            "usable": inside >= MIN_CUT_DECKS,
+        }
+    return totals
+
+
+def _results_for(group: list[ResolvedDeck], totals: dict[str, dict]) -> dict:
+    """How one archetype or pair did, under each cut.
+
+    `share_of_cut` against `share_of_field` is the number worth reading: an archetype
+    that is 18% of the field and 6% of the top finishes is the deck you will meet and
+    not the deck that is winning, and the report used to rank everything by the first
+    number alone.
+    """
+    results = {}
+    for cut in RESULT_CUTS:
+        verdicts = [_in_cut(item, cut) for item in group]
+        inside = sum(1 for verdict in verdicts if verdict is True)
+        total_in_cut = totals[cut["key"]]["decks"]
+        unknown = sum(1 for verdict in verdicts if verdict is None)
+        judged = len(group) - unknown
+        low, high = _wilson(inside, judged)
+        results[cut["key"]] = {
+            "decks": inside,
+            "share_of_cut": _pct(inside, total_in_cut),
+            "unknown": unknown,
+            # The decks this cut could place, and so the denominator of the rate
+            # below. Decks it could not place are left out rather than counted as
+            # failures: a bracket straddling the cut is missing information, not a bad
+            # finish, and charging it as one drags down whichever archetypes happen to
+            # sit on the boundary.
+            "judged": judged,
+            # Of the lists the cut could place, how many reached it. This is what the
+            # results chart ranks on - it correlated best with an outside win rate,
+            # and unlike a share of the cut it does not put the biggest archetype on
+            # top by virtue of being biggest.
+            "conversion": _pct(inside, judged),
+            # ...and how much that rate is worth. `MIN_RATE_DECKS` keeps the thinnest
+            # rates off the chart; the interval is what stops the rest reading as
+            # precise.
+            "conversion_low": low,
+            "conversion_high": high,
+        }
+    return results
+
+
 def _examples(group: list[ResolvedDeck], limit: int = 8) -> list[dict]:
     # `tournament_date` is optional on Deck, and comparing None with a string raises -
     # an undated deck used to take the whole build down here. Undated sorts last among
@@ -453,6 +638,7 @@ def _variants(
     group: list[ResolvedDeck],
     total_field: int,
     halves: Halves,
+    cut_totals: dict[str, dict],
 ) -> list[dict]:
     """Describe the archetypes of one ink pair.
 
@@ -486,6 +672,7 @@ def _variants(
                 "signature": signature,
                 "named_by_players": deck_names(cluster),
                 "record": _record(cluster.members),
+                "results": _results_for(cluster.members, cut_totals),
                 "cost_curve": [] if is_brew else _cost_curve(cluster.members),
                 "cards": [] if is_brew else _card_stats_for(cluster.members),
                 "examples": _examples(cluster.members, limit=5),
@@ -538,6 +725,8 @@ def build_meta(
     if halves.blocked:
         log.info("no movement shown: %s", halves.blocked)
 
+    cut_totals = _cut_totals(field)
+
     card_payloads: dict[str, dict] = {}
     for item in field:
         for card, _count in item.entries:
@@ -556,12 +745,13 @@ def build_meta(
                 "decks": len(group),
                 "share": _pct(len(group), total),
                 "record": _record(group),
+                "results": _results_for(group, cut_totals),
                 "cost_curve": _cost_curve(group),
                 "type_mix": _type_mix(group),
                 "cards": _card_stats_for(group),
                 "examples": _examples(group),
                 "trend": _trend_for(group, halves),
-                "variants": _variants(clusters, group, total, halves),
+                "variants": _variants(clusters, group, total, halves, cut_totals),
             }
         )
 
@@ -636,6 +826,12 @@ def build_meta(
             "decks_dropped_thin_pairs": sum(len(g) for g in dropped),
         },
         "trend": halves.as_dict(),
+        "results": {
+            "cuts": [cut_totals[cut["key"]] for cut in RESULT_CUTS],
+            "default": DEFAULT_CUT,
+            "min_cut_decks": MIN_CUT_DECKS,
+            "min_rate_decks": MIN_RATE_DECKS,
+        },
         "inks": ink_rows,
         "pairs": pairs,
         "threats": _threats(field, archetype_groups, card_payloads, halves),

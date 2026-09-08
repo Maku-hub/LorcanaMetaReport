@@ -21,6 +21,18 @@ from lorcana_meta.console import configure_output  # noqa: E402
 DEFAULT = Path("site/data/meta.json")
 
 
+def _rounding_drift(rows: int) -> float:
+    """How far a sum of shares may legitimately sit from 100%.
+
+    Every share in the report is rounded to a tenth before it is printed, on purpose:
+    the numbers a reader adds up have to be the numbers on screen. That means a sum
+    over many rows drifts, by up to half a tenth per row, and the tolerance has to
+    know how many rows it is summing. Half a point of slack on top absorbs the
+    denominators.
+    """
+    return 0.05 * rows + 0.5
+
+
 def _check_charts_reconcile(report: dict, totals: dict) -> list[str]:
     """The overview's three charts are three cuts of one field. They have to agree.
 
@@ -36,12 +48,23 @@ def _check_charts_reconcile(report: dict, totals: dict) -> list[str]:
     if not pairs or not total:
         return problems
 
-    if sum(pair["decks"] for pair in pairs) != total - totals.get(
-        "decks_dropped_thin_pairs", 0
-    ):
+    # `totals.decks` is the field the report describes - thin pairs are dropped before
+    # anything is derived, so it is already net of them. It was gross of them when the
+    # drop was a post-filter, and this check subtracted them a second time.
+    if sum(pair["decks"] for pair in pairs) != total:
         problems.append(
-            f"the ink pairs hold {sum(p['decks'] for p in pairs)} decks, the field says "
-            f"{total} and {totals.get('decks_dropped_thin_pairs', 0)} were dropped as thin"
+            f"the ink pairs hold {sum(p['decks'] for p in pairs)} decks but the field "
+            f"says {total}"
+        )
+
+    # The funnel: everything that resolved is either in the field or was dropped as a
+    # thin pair, and both halves are on the About page.
+    resolved = totals.get("decks_resolved")
+    dropped = totals.get("decks_dropped_thin_pairs", 0)
+    if resolved is not None and resolved != total + dropped:
+        problems.append(
+            f"{resolved} decklists resolved but the field holds {total} and only "
+            f"{dropped} were dropped as thin - some decks went missing unaccounted for"
         )
 
     for pair in pairs:
@@ -51,9 +74,13 @@ def _check_charts_reconcile(report: dict, totals: dict) -> list[str]:
                 f"{pair['label']}: its archetypes hold {inside} decks but the pair says "
                 f"{pair['decks']} - every deck belongs to exactly one archetype"
             )
-        within = sum(variant["share_of_pair"] for variant in pair.get("variants", []))
-        if pair.get("variants") and not (99.0 <= within <= 101.0):
-            problems.append(f"{pair['label']}: archetype shares of the pair sum to {within:.1f}%")
+        variants = pair.get("variants", [])
+        within = sum(variant["share_of_pair"] for variant in variants)
+        if variants and abs(within - 100.0) > _rounding_drift(len(variants)):
+            problems.append(
+                f"{pair['label']}: archetype shares of the pair sum to {within:.1f}% "
+                f"across {len(variants)} archetypes"
+            )
 
     # Single-ink presence counts every deck that plays an ink, so it must equal the
     # pairs that ink appears in - the chart is a different cut, not a different field.
@@ -119,6 +146,101 @@ def _check_threats(report: dict, totals: dict) -> list[str]:
             problems.append(
                 f"{threat['name']}: field presence {threat['field_presence']}% does not "
                 f"match {threat['decks']} of {total} decks ({presence}%)"
+            )
+    return problems
+
+
+def _check_results(report: dict, totals: dict) -> list[str]:
+    """The results axis has to reconcile with the field it is drawn from.
+
+    This is the only part of the report ranked on results rather than popularity, so
+    a wrong denominator here would read as a finding: "this archetype takes 40% of the
+    winners" is a claim someone changes their deck over.
+    """
+    results = report.get("results")
+    if results is None:
+        return ["no results block in the report - the overview reads from it"]
+
+    problems = []
+    total = totals.get("decks", 0)
+    keys = [cut["key"] for cut in results["cuts"]]
+    if results["default"] not in keys:
+        problems.append(
+            f"the default cut {results['default']!r} is not one of {keys}"
+        )
+
+    for cut in results["cuts"]:
+        key = cut["key"]
+        if cut["decks"] > total:
+            problems.append(
+                f"cut {key}: {cut['decks']} decks made it in a {total}-deck field"
+            )
+        if cut["vacuous_events"] > cut["events"]:
+            problems.append(
+                f"cut {key}: {cut['vacuous_events']} vacuous of {cut['events']} events"
+            )
+
+        # A rate and the sample behind it have to agree, because the results chart
+        # ranks on the rate and a wrong denominator reads as a finding.
+        for pair in report.get("pairs", []):
+            for variant in pair.get("variants", []):
+                result = variant["results"][key]
+                if "judged" not in result:
+                    continue
+                if result["judged"] + result["unknown"] != variant["decks"]:
+                    problems.append(
+                        f"cut {key}, {variant['label']}: {result['judged']} judged plus "
+                        f"{result['unknown']} unjudged is not {variant['decks']} decks"
+                    )
+                if result["decks"] > result["judged"]:
+                    problems.append(
+                        f"cut {key}, {variant['label']}: {result['decks']} reached the "
+                        f"cut out of {result['judged']} the cut could place"
+                    )
+                low, high = result["conversion_low"], result["conversion_high"]
+                if not (low <= result["conversion"] <= high):
+                    problems.append(
+                        f"cut {key}, {variant['label']}: conversion "
+                        f"{result['conversion']}% sits outside its own interval "
+                        f"{low}-{high}%"
+                    )
+                if not (0.0 <= low <= high <= 100.0):
+                    problems.append(
+                        f"cut {key}, {variant['label']}: interval {low}-{high}% leaves "
+                        f"the possible range"
+                    )
+
+        # Shares of a cut are shares of that cut, so they add up to it - and every
+        # deck in it belongs to exactly one archetype, brews included.
+        inside = 0
+        share = 0.0
+        contributors = 0
+        for pair in report.get("pairs", []):
+            for variant in pair.get("variants", []):
+                result = variant["results"][key]
+                inside += result["decks"]
+                share += result["share_of_cut"]
+                contributors += 1 if result["decks"] else 0
+                if result["decks"] > variant["decks"]:
+                    problems.append(
+                        f"cut {key}, {variant['label']}: {result['decks']} in the cut "
+                        f"but the archetype only has {variant['decks']} decks"
+                    )
+        if inside != cut["decks"]:
+            problems.append(
+                f"cut {key}: archetypes account for {inside} decks, the cut holds "
+                f"{cut['decks']} - every deck in a cut belongs to exactly one"
+            )
+        # The deck counts above are the exact check. This one is the shares a reader
+        # can add up, and its tolerance has to scale: each is rounded to a tenth, so
+        # 72 contributing archetypes can drift 3.6 points without anything being
+        # wrong. A flat +/-1 point, copied from the eleven-row pair check, reported a
+        # real 475-deck report as broken.
+        drift = _rounding_drift(contributors)
+        if cut["decks"] and abs(share - 100.0) > drift:
+            problems.append(
+                f"cut {key}: archetype shares of it sum to {share:.1f}%, more than "
+                f"{drift:.1f} points off across {contributors} contributing archetypes"
             )
     return problems
 
@@ -215,12 +337,16 @@ def main(argv: list[str] | None = None) -> int:
         problems.append("no card details in the report")
 
     # Shares are quoted against the field, so they have to add up to it.
-    share = sum(pair["share"] for pair in report.get("pairs", []))
-    if report.get("pairs") and not (99.0 <= share <= 101.0):
-        problems.append(f"ink pair shares sum to {share:.1f}%, expected ~100%")
+    pairs = report.get("pairs", [])
+    share = sum(pair["share"] for pair in pairs)
+    if pairs and abs(share - 100.0) > _rounding_drift(len(pairs)):
+        problems.append(
+            f"ink pair shares sum to {share:.1f}% across {len(pairs)} pairs, expected ~100%"
+        )
 
     problems += _check_charts_reconcile(report, totals)
     problems += _check_threats(report, totals)
+    problems += _check_results(report, totals)
     problems += _check_trend(report, totals)
 
     print(

@@ -50,10 +50,14 @@ class LocalSource:
     attribution_url = ""
 
     def __init__(
-        self, directory: Path | str = "data/decks", *, fmt: str = "Core Constructed"
+        self, directory: Path | str = "data/decks", *, fmt: str | None = None
     ) -> None:
         self.directory = Path(directory)
-        self.fmt = fmt
+        # Coerced here rather than trusted from the caller. `--format` defaults to
+        # `None` so the CLI can tell "the user said nothing" from "the user asked for
+        # this", and a `None` arriving intact turned into the literal string "None"
+        # as a format name on any deck file without a `format` key.
+        self.fmt = fmt or "Core Constructed"
 
     def fetch(self, start: date, end: date) -> list[Deck]:
         if not self.directory.is_dir():
@@ -157,5 +161,10 @@ class LocalSource:
             tournament_date=str(meta.get("tournament_date") or ""),
             fmt=str(meta.get("format") or self.fmt),
             url=str(meta.get("url") or ""),
+            # A placing written down as a number is that placing. Only a scraped
+            # bucket label ("Top8") is a bound rather than a fact.
+            standing_exact=values.get("standing") is not None or None,
+            # A placing written down as a number is a point, not a range.
+            standing_best=values.get("standing"),
             **values,
         )

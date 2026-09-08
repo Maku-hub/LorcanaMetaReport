@@ -13,9 +13,13 @@ to run it, nothing to keep in step.
 
 ```powershell
 python -m pip install -e .                            # once; puts lorcana-meta on PATH
-lorcana-meta build --last 14 --top 32                 # inkdecks is the default source
-.venv\Scripts\python.exe tools\bundle_report.py       # -> report.html
+lorcana-meta build --last 14 --top 32                 # -> site/data/meta.json + report.html
 ```
+
+A build writes the single-file report itself (`--no-bundle` to skip). It used to be a
+second command, and that let `report.html` go quietly stale behind the data - it
+renders perfectly and shows the previous window. `tools/bundle_report.py` is still
+there for re-bundling without refetching.
 
 There is no `PYTHONPATH=` prefix and no extras to remember — that is POSIX syntax, it
 fails on PowerShell, and the `[inkdecks]` extra was folded into the core dependencies
@@ -53,8 +57,8 @@ travels into the report and makes `tests/check_report.py` fail. Do not weaken th
 chain, and do not add a workflow that publishes anything — the one that existed was
 deleted on purpose (`docs/DECISIONS.md` §11), so there is currently no route out of
 this repo at all. A GitHub Pages site is **public even from a private repo** — access
-control is Enterprise Cloud only. The private route is `tools/bundle_report.py` →
-`report.html`.
+control is Enterprise Cloud only. The private route is the `report.html` every build
+writes; `lorcana_meta/bundle.py` holds the logic.
 
 **Never remove the inkdecks consent gate.** Their terms prohibit automated access
 without written consent. The flag is the user asserting they have it; nothing in the
@@ -104,6 +108,63 @@ the same decks with a different membership.
 of its pair, archetype shares of a pair summing to 100%, each ink's count equal to the
 pairs it appears in, and every threat's contributors accounting for every deck that
 runs the card.
+
+**A caveat nobody reads is not a caveat.** Long-form notes go in `barChart`'s `notes`
+option, behind a disclosure - not appended to the subtitle, which is how they reached
+**331 words above one chart and 637 across the overview**. Nothing is deleted to
+shorten a subtitle: `tests/test_render.mjs` caps every subtitle at 120 words *and*
+checks each note is still on the page, per chart rather than page-wide (an ink chart
+once lost its movement note while a sibling still carried the same sentence, and the
+check passed). Print forces the disclosures open.
+
+**A sorted chart claims a ranking, so it has to say when there is not one.**
+`separationNote()` compares every charted rate's interval with the leader's lower
+bound: on a real 837-deck field all 13 others overlapped it and none was measurably
+worse, so the chart disowns its order in words rather than implying a first place. The
+comparison is `other.high >= leader.low` - the wrong end passes every test built on
+identical or disjoint intervals, so the test for it uses a partial overlap.
+
+**A rate is ranked on, and it ships with its interval and its denominator.** The
+results chart ranks archetypes by conversion - lists reaching the cut over lists the
+cut could place - because a share of the winners puts the biggest archetype first for
+being biggest, and because conversion correlated better with an outside win rate
+(+0.79 against +0.56). Every rate carries `judged`, `conversion_low` and
+`conversion_high` (Wilson 95%), and `MIN_RATE_DECKS` keeps the thinnest off the chart:
+a real archetype with 3 lists converted all 3. A report whose rates lack `judged`
+cannot be ranked at all - `withDefaults` marks it `rankable: false` and the chart
+withholds itself, because with the denominator missing the floor reads as zero and
+that three-list archetype becomes "best converter". Found exactly that way.
+
+**Share of the field is not a result, and the two get separate charts.** The most
+played archetype in a real field took 19.4% of the field and 11.1% of the top 8s.
+Result cuts live in `RESULT_CUTS`; the reader picks one because an absolute cut
+over-credits small events and a percentage cut over-credits large ones, and each cut
+reports `vacuous_events` — the events it excludes nothing from — so the bias is
+measured on the page rather than described in a footnote. A cut under
+`MIN_CUT_DECKS` is withheld with its arithmetic.
+
+**A placing is a range, and inkdecks publishes knockout brackets.** On a real
+842-deck field the only exact labels were 1st, 2nd and 3rd; every other deck carried
+`Top4`/`Top8`/`Top16`/`Top32`. Those are **disjoint** — the site shows the tightest
+descriptor it has, so a `Top8` deck went out in the quarter-finals and finished 5th
+to 8th. `standing` is the worst end, `standing_best` the best (`K // 2 + 1`).
+
+Both ends decide a cut: inside if the worst end clears it, outside if the best end
+does not, `None` only when the bracket straddles the line. Reading the worst end
+alone meant **no deck could ever be excluded** — 514 of 842 unjudgeable for a top-8
+cut, and every event reported as one the cut excluded nothing from. Decks a cut cannot
+judge are counted, shown, and left out of `conversion`'s denominator rather than
+charged as failures: which archetypes sit on a bracket boundary is an artefact of the
+labelling. Conversion is always labelled conditional on having made the fetched
+`--top N` cut.
+
+**The win rate in this report is conditioned on the cut, and the label has to say
+so.** `record.win_rate` is computed over decks that all finished inside `--top N`, so
+every figure is high and the spread is compressed. Checked against inkdecks' own
+winrate matrix over the same window: ours ran **11 points high in every ink pair**,
+turning 34 points of real spread into 8 - Sapphire/Steel wins 36% of its games and the
+report said 55.6%. `winRateLabel()` names the sample (`Win rate, top-32 lists`) and
+`winRateNote()` travels with it. Never label it "match win rate" again.
 
 **Card figures are attributed to archetypes, never to ink pairs.** The threat board
 said "played by Amber/Amethyst 63.2%" where one archetype ran the card in every list

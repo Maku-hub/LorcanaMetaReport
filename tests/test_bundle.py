@@ -19,10 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "tools"))
 
-from bundle_report import _inline_safe, build  # noqa: E402
-
+from lorcana_meta.bundle import _inline_safe, build  # noqa: E402
 from lorcana_meta.console import configure_output  # noqa: E402
 
 FAILURES: list[str] = []
@@ -93,6 +91,79 @@ def test_line_separators_are_escaped():
 
     check(all(sep not in safe for sep in separators), "both separators escaped")
     check(json.loads(safe) == value, "value preserved")
+
+
+def test_a_build_writes_the_single_file_by_default():
+    """The bundle is part of a build, not a step you have to remember.
+
+    Left as a second command it went quietly stale: rebuild the data, forget the
+    bundle, open the file - it renders perfectly and shows the previous window. The
+    embedded build stamp is the only clue and it only helps someone who looks.
+    """
+    from lorcana_meta.cli import main as cli_main
+
+    with tempfile.TemporaryDirectory() as directory:
+        data = Path(directory) / "meta.json"
+        out = Path(directory) / "report.html"
+        code = cli_main(
+            [
+                "build",
+                "--source",
+                "local",
+                "--local-dir",
+                str(ROOT / "data" / "decks"),
+                "--last",
+                "400",
+                "--out",
+                str(data),
+                "--bundle-out",
+                str(out),
+            ]
+        )
+        check(code == 0, f"the build succeeded, got {code}")
+        check(data.exists(), "it wrote the data")
+        check(out.exists(), "and the single file, with no second command")
+        if out.exists():
+            html = out.read_text(encoding="utf-8")
+            check('id="meta-data"' in html, "the data is inlined in it")
+            embedded = json.loads(
+                re.search(r'id="meta-data"[^>]*>(.*?)</script>', html, re.S).group(1)
+                .replace("\u003c", "<")
+                .replace("\u003e", ">")
+            )
+            live = json.loads(data.read_text(encoding="utf-8"))
+            check(
+                embedded["generated_at"] == live["generated_at"],
+                "and it is the data this build just wrote, not an older one",
+            )
+
+
+def test_a_build_can_be_told_not_to_bundle():
+    """Serving `site/` directly needs the data and nothing else."""
+    from lorcana_meta.cli import main as cli_main
+
+    with tempfile.TemporaryDirectory() as directory:
+        data = Path(directory) / "meta.json"
+        out = Path(directory) / "report.html"
+        code = cli_main(
+            [
+                "build",
+                "--source",
+                "local",
+                "--local-dir",
+                str(ROOT / "data" / "decks"),
+                "--last",
+                "400",
+                "--out",
+                str(data),
+                "--bundle-out",
+                str(out),
+                "--no-bundle",
+            ]
+        )
+        check(code == 0, f"the build succeeded, got {code}")
+        check(data.exists(), "it wrote the data")
+        check(not out.exists(), "and left the single file alone")
 
 
 def main() -> int:

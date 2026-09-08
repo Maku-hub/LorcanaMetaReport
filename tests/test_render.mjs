@@ -51,7 +51,9 @@ function load() {
   const exports = `
     return { state, renderOverview, renderPair, renderThreats, renderAbout,
              withDefaults, brewCoverage, movementNote, deltaText, deltaPlain,
-             buildStamp, playedBy, threatRows, cardPosition, esc, inspectCard };
+             buildStamp, playedBy, threatRows, cardPosition, esc, inspectCard,
+             winningChart, activeCut, bestConverterTile, winRateLabel,
+             winRateNote, convertingArchetypes };
   `;
   return new Function(stubs + source + exports)();
 }
@@ -69,6 +71,7 @@ function report(mutate) {
 function render(meta, route) {
   app.state.meta = meta;
   app.state.tables = new Set();
+  app.state.resultCut = null;
   app.state.cardFilter = "";
   app.state.typeFilter = "";
   if (route && route.startsWith("pair/")) return app.renderPair(route.slice(5));
@@ -101,8 +104,45 @@ function tableTwin(meta, id) {
   return { columns, cells, cell: (label) => cells[columns.indexOf(label)] };
 }
 
+/** Two non-brew archetypes from a report copy, for tests that reshape their numbers. */
+function allTwo(meta) {
+  const found = [];
+  for (const pair of meta.pairs) {
+    for (const variant of pair.variants) {
+      if (!variant.is_brew) found.push(variant);
+      if (found.length === 2) return found;
+    }
+  }
+  return found;
+}
+
+/**
+ * The notes disclosure belonging to one chart, by its toggle id.
+ *
+ * Per chart, not per page: an assertion that a phrase appears *somewhere* passed when
+ * the ink chart lost its movement note, because the pair chart still carried the same
+ * sentence. Each chart has to explain itself.
+ */
+function chartNotes(html, id) {
+  const marker = `data-table-toggle="${id}"`;
+  const at = html.indexOf(marker);
+  if (at === -1) return null;
+  const end = html.indexOf("</section>", at);
+  const block = /<details class="notes">([\s\S]*?)<\/details>/.exec(html.slice(at, end));
+  return block ? prose(block[1].replace(/<[^>]+>/g, " ")).trim() : "";
+}
+
 /** The page's own escaper, so a label with an apostrophe is compared as rendered. */
 const esc0 = (value) => app.esc(value);
+
+/**
+ * Rendered HTML with its whitespace collapsed, for asserting on a sentence.
+ *
+ * Prose in this page lives in template literals and keeps their line breaks and
+ * indentation, so a regex for a phrase that happens to wrap matches nothing. That is
+ * a test failing for a reason unrelated to the page, which is the worst kind.
+ */
+const prose = (html) => html.replace(/\s+/g, " ");
 
 const anyVariant = (meta, predicate) => {
   for (const pair of meta.pairs) {
@@ -233,6 +273,17 @@ function test_all_three_charts_carry_movement_together() {
     return;
   }
 
+  // Each of the three charts explains movement itself; a page-wide check passed once
+  // when one of them lost its note and a sibling still carried the same sentence.
+  const overview = render(meta, "");
+  for (const id of ["archetypes", "pairs", "inks"]) {
+    const notes = chartNotes(overview, id);
+    check(
+      notes !== null && /cut in two/.test(notes),
+      `the ${id} chart carries the movement note: ${String(notes).slice(0, 70)}`
+    );
+  }
+
   for (const id of ["archetypes", "pairs", "inks"]) {
     const twin = tableTwin(meta, id);
     check(
@@ -291,8 +342,13 @@ function test_an_older_report_without_movement_still_renders() {
     return;
   }
   check(html.includes("Movement is not shown"), "the page says movement is unavailable");
-  check(/rebuild it/.test(html), "and what to do about it");
-  check(!html.includes("bar-row__after"), "no empty delta slots");
+  check(/rebuild it/i.test(prose(html)), "and what to do about it");
+  check(!/class="delta/.test(html), "and draws no movement deltas");
+  // The results axis is a different measurement and must not go down with movement.
+  check(
+    /class="interval/.test(html),
+    "while the results axis, which is not movement, keeps its intervals"
+  );
 
   for (const id of ["archetypes", "pairs", "inks"]) {
     check(
@@ -315,8 +371,8 @@ function test_a_withheld_split_explains_itself() {
     r.inks.forEach((i) => (i.trend = null));
   });
   const html = render(meta, "");
-  check(html.includes("only 3 deck(s)"), "the reason is on the page, in words");
-  check(!html.includes("bar-row__after"), "and no row pretends to have a delta");
+  check(prose(html).includes("only 3 deck(s)"), "the reason is on the page, in words");
+  check(!/class="delta/.test(html), "and no row pretends to have moved");
 }
 
 /** An empty field is a state the page has to survive, not a crash. */
@@ -398,7 +454,7 @@ function test_the_threat_board_names_decks_not_ink_pairs() {
 
   check(html.includes("Played by"), "the column is there");
   check(
-    /names archetypes, not ink pairs/.test(html),
+    /names archetypes, not ink pairs/.test(prose(html)),
     "and the page says which level it is naming"
   );
 
@@ -517,6 +573,547 @@ function test_the_card_inspector_shows_where_the_card_sits_in_the_meta() {
   );
 }
 
+/**
+ * The overview answers both questions: what you will face, and what is winning.
+ *
+ * Every chart in this report used to rank by how many people played a deck. On a real
+ * field the most played archetype took 19% of the field and 11% of the top finishes -
+ * the deck to expect and not the deck to beat - and nothing on the page said so.
+ */
+function test_the_overview_ranks_on_results_as_well_as_popularity() {
+  const meta = report();
+  const html = render(meta, "");
+
+  check(html.includes("What is winning"), "the results chart is on the overview");
+  check(html.includes("The field right now"), "and the field chart still is");
+  check(/Result cut/.test(html), "the cut is selectable");
+  check(/Best converter/.test(html), "and the KPI row carries the results axis");
+
+  // Every cut the report computed must be offered, and the report's own default
+  // must be the one selected when the reader has not chosen.
+  for (const cut of meta.results.cuts) {
+    check(
+      html.includes(`value="${cut.key}"`),
+      `the ${cut.label} cut is offered`
+    );
+  }
+  app.state.meta = meta;
+  app.state.resultCut = null;
+  check(
+    app.activeCut().key === meta.results.default,
+    `an unchosen cut falls back to the report's default: ${app.activeCut().key}`
+  );
+}
+
+/**
+ * A cut too thin to read is withheld with its arithmetic, not shown as noise.
+ *
+ * With three decks in a cut every archetype in it is a third of "the winners", and a
+ * chart of that reads as a finding.
+ */
+function test_a_thin_cut_is_withheld_and_says_why() {
+  const meta = report((r) => {
+    r.results.cuts = r.results.cuts.map((cut) => ({ ...cut, decks: 3, usable: false }));
+  });
+  app.state.meta = meta;
+  app.state.resultCut = meta.results.cuts[0].key;
+  const html = app.winningChart();
+  app.state.resultCut = null;
+
+  check(/Not shown for this cut/.test(html), "the chart is withheld");
+  check(/3 deck/.test(prose(html)), "and names how few decks made it");
+  check(!html.includes("bar-row"), "with no bars drawn");
+  check(/Result cut/.test(html), "but the picker stays, so a wider cut is reachable");
+}
+
+/** A cut that separates nothing at some events has to admit it. */
+function test_a_cut_that_excludes_nothing_admits_it() {
+  const meta = report((r) => {
+    r.results.cuts = r.results.cuts.map((cut) => ({
+      ...cut,
+      usable: true,
+      decks: 20,
+      vacuous_events: 3,
+      events: 4,
+    }));
+  });
+  app.state.meta = meta;
+  app.state.resultCut = meta.results.cuts[0].key;
+  const html = app.winningChart();
+  app.state.resultCut = null;
+
+  check(
+    /excludes nothing/.test(prose(html)),
+    "the page says the cut did not separate those events"
+  );
+  check(/3 of 4 events/.test(prose(html)), "and how many of them there were");
+}
+
+/** Bucketed placings that no cut could judge are counted, not dropped in silence. */
+function test_decks_no_cut_could_judge_are_counted() {
+  const meta = report((r) => {
+    r.results.cuts = r.results.cuts.map((cut) => ({
+      ...cut,
+      usable: true,
+      decks: 20,
+      unknown: 7,
+    }));
+  });
+  app.state.meta = meta;
+  app.state.resultCut = meta.results.cuts[0].key;
+  const html = app.winningChart();
+  app.state.resultCut = null;
+
+  check(
+    /7 deck\(s\) could not be judged/.test(prose(html)),
+    "the unjudged decks are named"
+  );
+  check(
+    /left out of these figures/.test(prose(html)),
+    "and said to be left out, not failed"
+  );
+  check(/bracket/.test(html), "with the reason - the source publishes brackets");
+}
+
+/**
+ * The selection the whole axis is conditional on has to be stated.
+ *
+ * The field is already cut to the top N finishes fetched, so "conversion" is which of
+ * the decks already doing well went furthest - not a win rate against a whole
+ * tournament, which is how it would otherwise be read.
+ */
+function test_the_results_axis_states_what_it_is_conditional_on() {
+  const meta = report();
+  app.state.meta = meta;
+  const html = app.winningChart();
+  check(
+    /conditional on making the fetched cut/.test(prose(html)),
+    "the selection bias is stated where the numbers are"
+  );
+  check(
+    /not a win rate against a whole tournament/.test(prose(html)),
+    "and what the numbers are not"
+  );
+}
+
+/** An older report without the results block degrades instead of throwing. */
+function test_a_report_without_results_still_renders() {
+  const meta = report((r) => delete r.results);
+  let html;
+  try {
+    html = render(meta, "");
+  } catch (error) {
+    failures.push(`a report with no results block throws: ${error.message}`);
+    return;
+  }
+  check(/Not in this report/.test(html), "the chart says it cannot answer");
+  check(/rebuild it/i.test(prose(html)), "and what to do");
+  check(!html.includes("undefined"), "and renders no undefined");
+}
+
+/** Match win rate is the sturdiest performance number here, so it gets a column. */
+function test_match_win_rate_is_a_column_not_only_a_tooltip() {
+  const meta = report();
+  const twin = tableTwin(meta, "archetypes");
+  const label = app.winRateLabel();
+  check(
+    twin.columns.includes(label),
+    `the archetype table shows it, got ${JSON.stringify(twin.columns)}`
+  );
+  check(
+    /%|–/.test(twin.cell(label) || ""),
+    `and the cell carries a value: ${JSON.stringify(twin.cell(label))}`
+  );
+}
+
+/**
+ * The win rate must name the sample it was measured on.
+ *
+ * Every deck in the report finished inside the fetched cut, so the figure is a win
+ * rate among lists that already placed - uniformly high and compressed. Checked
+ * against inkdecks' own matrix over the same window, ours ran 11 points high in every
+ * ink pair, turning 34 points of real spread into 8. Labelled "Match win rate" it
+ * read as how often a deck wins, which it is not.
+ */
+function test_the_win_rate_names_the_sample_it_came_from() {
+  const meta = report();
+  app.state.meta = meta;
+
+  check(
+    app.winRateLabel().includes("top-32"),
+    `the label names the cut: ${app.winRateLabel()}`
+  );
+  check(
+    !/match win rate/i.test(app.winRateLabel()),
+    `and does not claim to be a plain match win rate: ${app.winRateLabel()}`
+  );
+  check(
+    /already placed/.test(app.winRateNote()),
+    "the caveat says what the sample is"
+  );
+
+  const html = render(meta, "");
+  check(!/match win rate/i.test(html), "the overview never uses the old label");
+  check(
+    prose(html).includes(app.winRateLabel()),
+    "and shows the honest one"
+  );
+  check(
+    /win rates among decks that already placed/.test(prose(html)),
+    "with the caveat beside the chart that ranks on results"
+  );
+
+  const pair = render(meta, `pair/${meta.pairs[0].key}`);
+  check(!/match win rate/i.test(pair), "nor does a pair page");
+  check(prose(pair).includes(app.winRateLabel()), "which carries the honest label too");
+
+  const about = render(meta, "about");
+  check(
+    /11 points high/.test(prose(about)),
+    "and About quantifies how far off the old reading was"
+  );
+
+  // With no placing cut there is no cut to name, and it must not print "top-null".
+  const uncut = report((r) => {
+    r.filters.top = null;
+  });
+  app.state.meta = uncut;
+  check(
+    app.winRateLabel() === "Win rate, placed lists",
+    `an uncut field still names its sample: ${app.winRateLabel()}`
+  );
+  check(!/null|undefined/.test(app.winRateNote()), "and the note stays clean");
+}
+
+/**
+ * The results chart ranks on the rate, not on how big an archetype is.
+ *
+ * It used to sort by share of the top finishes, which put the largest archetype first
+ * because it was largest - under a heading saying "what is winning". On a real field
+ * the leader that produced was a deck whose share of the top finishes was *below* its
+ * share of the field.
+ */
+function test_the_results_chart_ranks_on_the_rate() {
+  const meta = report((r) => {
+    // A big archetype that converts badly, and a small one that converts well.
+    const [big, small] = allTwo(r);
+    Object.assign(big.results.top10pct, {
+      decks: 3, judged: 60, conversion: 5.0, conversion_low: 1.7,
+      conversion_high: 13.9, share_of_cut: 60.0, unknown: 0,
+    });
+    big.decks = 60;
+    big.share_of_field = 60.0;
+    Object.assign(small.results.top10pct, {
+      decks: 8, judged: 10, conversion: 80.0, conversion_low: 49.0,
+      conversion_high: 94.3, share_of_cut: 20.0, unknown: 0,
+    });
+    small.decks = 10;
+    small.share_of_field = 10.0;
+  });
+  app.state.meta = meta;
+  app.state.resultCut = "top10pct";
+  const cut = app.activeCut();
+  const ranked = app.convertingArchetypes(cut);
+  app.state.resultCut = null;
+
+  check(ranked.length >= 2, `at least two archetypes rank: ${ranked.length}`);
+  const rates = ranked.map((a) => a.results.top10pct.conversion);
+  const sorted = [...rates].sort((x, y) => y - x);
+  check(
+    JSON.stringify(rates) === JSON.stringify(sorted),
+    `ordered by conversion, got ${JSON.stringify(rates)}`
+  );
+  check(
+    ranked[0].results.top10pct.conversion === 80.0,
+    `the converter leads, not the big archetype: ${ranked[0].label} at ${rates[0]}%`
+  );
+  // Against the big archetype specifically: other archetypes in the sample field sit
+  // between the two, so comparing with whatever landed second proves nothing.
+  const leader = ranked[0].results.top10pct;
+  const biggest = ranked.find((a) => a.results.top10pct.share_of_cut === 60.0);
+  check(biggest !== undefined, "the big archetype is still charted");
+  check(
+    biggest && leader.share_of_cut < biggest.results.top10pct.share_of_cut,
+    "and the leader holds a smaller share of those finishes than the big one"
+  );
+  check(
+    biggest && ranked.indexOf(biggest) > 0,
+    `the big archetype is not first: position ${biggest && ranked.indexOf(biggest)}`
+  );
+}
+
+/** A rate needs lists behind it before it is charted at all. */
+function test_a_rate_from_too_few_lists_is_not_charted() {
+  const floor = built.results.min_rate_decks;
+  check(floor >= 8, `the report publishes a floor: ${floor}`);
+
+  const meta = report((r) => {
+    const [thin] = allTwo(r);
+    Object.assign(thin.results.top10pct, {
+      decks: 3, judged: 3, conversion: 100.0, conversion_low: 43.8,
+      conversion_high: 100.0, share_of_cut: 2.5, unknown: 0,
+    });
+    thin.decks = 3;
+    thin.label = "Three Lists And A Dream";
+  });
+  app.state.meta = meta;
+  app.state.resultCut = "top10pct";
+  const ranked = app.convertingArchetypes(app.activeCut());
+  const html = app.winningChart();
+  app.state.resultCut = null;
+
+  check(
+    !ranked.some((a) => a.label === "Three Lists And A Dream"),
+    "a three-list archetype does not rank, whatever its rate"
+  );
+  check(
+    !html.includes("Three Lists And A Dream"),
+    "and does not appear on the chart"
+  );
+  // Left out and said so: the arithmetic, not just a count.
+  check(
+    /archetypes have the \d+ judged lists a rate needs/.test(prose(html)),
+    `the chart states what it can speak for: ${prose(html).slice(0, 200)}`
+  );
+  check(
+    /% of the field; the other \d+ are too small to rank/.test(prose(html)),
+    "including the share of the field it covers"
+  );
+}
+
+/** Every charted rate shows the interval that qualifies it. */
+function test_every_charted_rate_shows_its_interval() {
+  const meta = report();
+  app.state.meta = meta;
+  const html = app.winningChart();
+  const bars = (html.match(/class="bar-row"/g) || []).length;
+  const intervals = (html.match(/class="interval"/g) || []).length;
+  check(bars > 0, `the chart drew bars: ${bars}`);
+  check(
+    intervals === bars,
+    `every bar carries an interval: ${intervals} of ${bars}`
+  );
+  check(
+    /a rate from ten lists and one from a hundred are not the same claim/.test(prose(html)),
+    "and the chart says why the interval is there"
+  );
+  // How to read the order is a separate statement, tested with the separation note.
+  check(
+    /(not a ranking|clearly behind it)/.test(prose(html)),
+    "and how much of its own order the data supports"
+  );
+}
+
+/**
+ * A report whose rates carry no denominator must not be ranked at all.
+ *
+ * Found by rendering a real report built before this change: with `judged` missing the
+ * floor reads as zero, so a three-list archetype that converted all three became
+ * "Best converter". Degrading is the only honest option.
+ */
+function test_a_report_without_denominators_is_not_ranked() {
+  const meta = report((r) => {
+    for (const pair of r.pairs) {
+      for (const variant of pair.variants) {
+        for (const key of Object.keys(variant.results)) {
+          delete variant.results[key].judged;
+          delete variant.results[key].conversion_low;
+          delete variant.results[key].conversion_high;
+        }
+      }
+    }
+  });
+  check(meta.results.rankable === false, "the report is marked unrankable");
+  app.state.meta = meta;
+  const html = app.winningChart();
+  check(/Not in this report/.test(html), "the chart withholds itself");
+  check(
+    /cannot be ranked without that/.test(prose(html)),
+    `and says why: ${prose(html).slice(0, 240)}`
+  );
+  check(!html.includes("bar-row"), "with no bars");
+  const tile = app.bestConverterTile();
+  check(
+    !/\d/.test(tile.replace(/<[^>]*>/g, "").replace(/[^0-9]/g, "")) ||
+      /not enough results/.test(tile),
+    `and the tile claims nothing: ${tile.replace(/<[^>]+>/g, " ").trim()}`
+  );
+}
+
+/**
+ * A sorted bar chart reads as a ranking, so it has to say when there is not one.
+ *
+ * On a real 837-deck field every charted archetype's interval overlapped the
+ * leader's - not one was measurably worse - and the chart still presented fourteen of
+ * them in order. The order was an artefact of point estimates on a few dozen lists.
+ */
+function test_the_chart_says_when_its_order_is_not_a_ranking() {
+  // Overlapping intervals throughout: no archetype is separable from the leader.
+  const muddy = report((r) => {
+    for (const pair of r.pairs) {
+      for (const variant of pair.variants) {
+        if (variant.is_brew) continue;
+        Object.assign(variant.results.top10pct, {
+          decks: 5, judged: 20, conversion: 25.0 + (variant.key.length % 5),
+          conversion_low: 10.0, conversion_high: 50.0, unknown: 0,
+        });
+      }
+    }
+  });
+  app.state.meta = muddy;
+  app.state.resultCut = "top10pct";
+  const html = app.winningChart();
+  const tile = app.bestConverterTile();
+  app.state.resultCut = null;
+
+  check(
+    /The order here is not a ranking/.test(prose(html)),
+    `the chart disowns its own order: ${prose(html).slice(0, 180)}`
+  );
+  check(
+    /none of them is measurably worse/.test(prose(html)),
+    "and says what overlapping intervals mean"
+  );
+  check(
+    /not measurably worse/.test(prose(tile)),
+    `the tile does not crown a leader either: ${prose(tile.replace(/<[^>]+>/g, " "))}`
+  );
+
+  // Now one archetype clearly ahead of the rest: the chart may say so.
+  const clear = report((r) => {
+    const variants = [];
+    for (const pair of r.pairs) {
+      for (const variant of pair.variants) {
+        if (!variant.is_brew) variants.push(variant);
+      }
+    }
+    variants.forEach((variant, index) => {
+      Object.assign(
+        variant.results.top10pct,
+        index === 0
+          ? { decks: 80, judged: 100, conversion: 80.0, conversion_low: 71.0,
+              conversion_high: 86.9, unknown: 0 }
+          : { decks: 5, judged: 100, conversion: 5.0, conversion_low: 2.2,
+              conversion_high: 11.2, unknown: 0 }
+      );
+    });
+  });
+  app.state.meta = clear;
+  app.state.resultCut = "top10pct";
+  const sharp = app.winningChart();
+  app.state.resultCut = null;
+  check(
+    !/The order here is not a ranking/.test(prose(sharp)),
+    "with a real gap it stops disowning the order"
+  );
+  check(
+    /are clearly behind it/.test(prose(sharp)),
+    `and counts what the data does separate: ${prose(sharp).slice(0, 200)}`
+  );
+
+  // A partial overlap is the case that separates a right comparison from a wrong one.
+  // Identical or disjoint intervals answer the same either way, which let a mutation
+  // comparing the wrong ends of the intervals pass.
+  const partial = report((r) => {
+    const variants = [];
+    for (const pair of r.pairs) {
+      for (const variant of pair.variants) {
+        if (!variant.is_brew) variants.push(variant);
+      }
+    }
+    variants.forEach((variant, index) => {
+      // Leader 50% (40-60). One overlaps from below (30%, 20-45), the rest are clear
+      // of it entirely (5%, 2-11).
+      const shape =
+        index === 0
+          ? { conversion: 50.0, conversion_low: 40.0, conversion_high: 60.0 }
+          : index === 1
+            ? { conversion: 30.0, conversion_low: 20.0, conversion_high: 45.0 }
+            : { conversion: 5.0, conversion_low: 2.0, conversion_high: 11.0 };
+      Object.assign(variant.results.top10pct, { decks: 5, judged: 40, unknown: 0 }, shape);
+    });
+  });
+  app.state.meta = partial;
+  app.state.resultCut = "top10pct";
+  const mixed = prose(app.winningChart());
+  const charted = app.convertingArchetypes(app.activeCut()).length;
+  app.state.resultCut = null;
+
+  check(
+    new RegExp(`${charted - 2} of the other ${charted - 1} archetypes are clearly behind`).test(
+      mixed
+    ),
+    `the one overlapping from below is not counted as behind: ${mixed.slice(0, 240)}`
+  );
+  check(
+    /The remaining 1 overlap it/.test(mixed),
+    "and it is counted as overlapping instead"
+  );
+}
+
+/**
+ * The caveats moved off the subtitles, and none of them left the page.
+ *
+ * They had grown to 331 words above one bar chart and 637 across the overview, a
+ * sentence at a time, each individually earned. When everything is caveated at the
+ * same weight the ones that change how you read the chart are lost among the ones
+ * that do not, so they now sit behind a disclosure - on the page, one click away.
+ *
+ * This test exists because the tempting way to shorten a wall of text is to delete
+ * it, and every one of these sentences is load-bearing.
+ */
+function test_the_caveats_left_the_subtitles_without_leaving_the_page() {
+  const meta = report();
+  const html = render(meta, "");
+  const subtitles = [...html.matchAll(/<p class="subtitle">([\s\S]*?)<\/p>/g)].map((m) =>
+    prose(m[1].replace(/<[^>]+>/g, " ")).trim()
+  );
+  check(subtitles.length >= 4, `the overview has subtitles: ${subtitles.length}`);
+  for (const subtitle of subtitles) {
+    const words = subtitle.split(" ").filter(Boolean).length;
+    check(
+      words <= 120,
+      `no subtitle is a wall of text, found one of ${words} words: ${subtitle.slice(0, 90)}…`
+    );
+  }
+
+  // Every explanation is still reachable, in a disclosure rather than a footnote.
+  check(
+    (html.match(/<details class="notes">/g) || []).length >= 3,
+    "each chart carries its notes"
+  );
+  const readable = prose(html);
+  for (const phrase of [
+    "judged lists a rate needs",       // what the rate floor excludes
+    "95% interval",                    // why the interval is there
+    "in it for free",                  // the cut's own bias, measured
+    "knockout brackets",               // why some decks cannot be judged
+    "already placed",                  // the win rate's sample
+    "one-off lists",                   // what the archetype chart leaves out
+    "cut in two",                      // what movement is
+  ]) {
+    check(readable.includes(phrase), `"${phrase}" is still on the page`);
+  }
+}
+
+/**
+ * Paper cannot be clicked, so print must not hide anything behind a disclosure.
+ */
+function test_print_opens_every_disclosure() {
+  const css = readFileSync(join(ROOT, "site", "assets", "style.css"), "utf8");
+  const print = /@media print \{([\s\S]*)\}/.exec(css);
+  check(print !== null, "there is a print block");
+  if (!print) return;
+  check(
+    /details\.notes > summary \{\s*display: none/.test(print[1]),
+    "the toggle itself is not printed"
+  );
+  check(
+    /details\.notes > p \{\s*display: block !important/.test(print[1]),
+    "and the notes inside are forced open"
+  );
+}
+
 /* ------------------------------------------------------------------- main */
 
 const tests = Object.entries({
@@ -535,6 +1132,21 @@ const tests = Object.entries({
   test_the_overflow_badge_counts_contributors_the_payload_left_out,
   test_the_threat_board_can_rank_by_what_the_field_is_picking_up,
   test_the_card_inspector_shows_where_the_card_sits_in_the_meta,
+  test_the_overview_ranks_on_results_as_well_as_popularity,
+  test_a_thin_cut_is_withheld_and_says_why,
+  test_a_cut_that_excludes_nothing_admits_it,
+  test_decks_no_cut_could_judge_are_counted,
+  test_the_results_axis_states_what_it_is_conditional_on,
+  test_a_report_without_results_still_renders,
+  test_match_win_rate_is_a_column_not_only_a_tooltip,
+  test_the_win_rate_names_the_sample_it_came_from,
+  test_the_results_chart_ranks_on_the_rate,
+  test_a_rate_from_too_few_lists_is_not_charted,
+  test_every_charted_rate_shows_its_interval,
+  test_a_report_without_denominators_is_not_ranked,
+  test_the_chart_says_when_its_order_is_not_a_ranking,
+  test_the_caveats_left_the_subtitles_without_leaving_the_page,
+  test_print_opens_every_disclosure,
 });
 
 for (const [name, run] of tests) {

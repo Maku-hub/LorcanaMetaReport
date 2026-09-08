@@ -888,6 +888,261 @@ def test_thin_pairs_are_dropped_before_anything_is_quoted_against_the_field():
         named = sum(c["decks"] for c in threat["archetypes"])
         check(named <= 30, f"{threat['name']} names {named} decks in a 30-deck field")
 
+# ------------------------------------------------------- the results axis
+
+def _placed(standing, players=100, exact=True, event="T1", cards=None, best=None):
+    return Deck(
+        source="test",
+        deck_id=f"d{standing}-{event}",
+        player="P",
+        cards=cards
+        or [
+            DeckCard("Elsa - Snow Queen", 30),
+            DeckCard("Hades - Lord of the Underworld", 30),
+        ],
+        standing=standing,
+        standing_exact=exact,
+        standing_best=best if best is not None else (standing if exact else None),
+        wins=4,
+        losses=2,
+        draws=0,
+        tournament_id=event,
+        tournament_name="Cup",
+        tournament_date="2026-08-01",
+        tournament_players=players,
+    )
+
+
+def test_a_bracket_is_a_range_and_both_ends_decide_a_cut():
+    """"Top8" is 5th-8th, so it settles some cuts and genuinely cannot answer others.
+
+    A knockout bracket is a range. If its worst end is inside the cut the deck is in;
+    if its best end is already outside, the deck is out; only a cut that falls inside
+    the bracket has no answer. Reading nothing but the worst end - which this did at
+    first - meant no deck could ever be placed outside a cut at all, and on a real
+    842-deck field that left 514 of them unjudgeable and made every event look as
+    though the cut excluded nothing.
+    """
+    from lorcana_meta.analyze import RESULT_CUTS, _in_cut
+
+    cuts = {cut["key"]: cut for cut in RESULT_CUTS}
+    index = _index()
+    anomalies = Anomalies()
+
+    # Top8 at a 40-player event: 5th-8th. Top 10% there is 4 places, 25% is 10.
+    top8 = resolve_deck(
+        _placed(8, players=40, exact=False, best=5), index, anomalies
+    )
+    check(_in_cut(top8, cuts["top8"]) is True, "8th at worst is inside a top-8 cut")
+    check(_in_cut(top8, cuts["top25pct"]) is True, "and inside 10 places of 40")
+    check(
+        _in_cut(top8, cuts["top10pct"]) is False,
+        f"5th at best is outside 4 places: {_in_cut(top8, cuts['top10pct'])}",
+    )
+    check(_in_cut(top8, cuts["top1"]) is False, "and it plainly did not win the event")
+
+    # A cut that lands inside the bracket is the one with no answer.
+    straddling = {"key": "top6", "label": "Top 6", "places": 6, "fraction": None}
+    check(
+        _in_cut(top8, straddling) is None,
+        f"5th-8th against a top-6 cut cannot be settled: {_in_cut(top8, straddling)}",
+    )
+
+    exact = resolve_deck(_placed(8, players=40, exact=True), index, anomalies)
+    check(_in_cut(exact, cuts["top10pct"]) is False, "an exact 8th is outside the top 4")
+    check(_in_cut(exact, cuts["top1"]) is False, "and did not win")
+
+    # A source that offered no range at all must not have one assumed for it.
+    no_range = resolve_deck(
+        _placed(8, players=40, exact=False, best=0), index, anomalies
+    )
+    no_range.deck.standing_best = None
+    check(
+        _in_cut(no_range, cuts["top1"]) is None,
+        "with no range and no claim of exactness, the answer is unknown",
+    )
+
+    no_size = resolve_deck(_placed(3, players=None), index, anomalies)
+    check(
+        _in_cut(no_size, cuts["top10pct"]) is None,
+        "a percentage cut needs a field size to apply to",
+    )
+    check(_in_cut(no_size, cuts["top8"]) is True, "an absolute cut does not")
+
+
+def test_a_percentage_cut_is_measured_against_each_event():
+    from lorcana_meta.analyze import RESULT_CUTS, _in_cut
+
+    cuts = {cut["key"]: cut for cut in RESULT_CUTS}
+    index, anomalies = _index(), Anomalies()
+
+    # 10% of 24 players is 3 places; 10% of 210 is 21.
+    small = resolve_deck(_placed(5, players=24), index, anomalies)
+    large = resolve_deck(_placed(5, players=210), index, anomalies)
+    check(_in_cut(small, cuts["top10pct"]) is False, "5th of 24 misses the top 10%")
+    check(_in_cut(large, cuts["top10pct"]) is True, "5th of 210 clears it")
+    # Which is the bias the page has to state, in the other direction, for top 8:
+    check(_in_cut(small, cuts["top8"]) is True, "and both make a fixed top 8")
+    check(_in_cut(large, cuts["top8"]) is True, "regardless of how big the event was")
+
+
+def test_an_event_the_cut_excludes_nothing_from_is_counted():
+    """A cut that separates nothing at an event hands it the whole event for free.
+
+    This is the measured form of the bias in a percentage cut: if the fetched cut is
+    deeper than the percentage, a large event contributes every deck it has.
+    """
+    decks = [_placed(s, players=400, event="big") for s in (1, 2, 3, 4)]
+    decks += [_placed(s, players=20, event="small") for s in (1, 2, 9, 10)]
+    # Exact placings throughout, so "excludes nothing" means the cut is wide and not
+    # that the source was vague - the two were indistinguishable until brackets
+    # carried a range.
+    report = _built(decks)
+
+    cuts = {cut["key"]: cut for cut in report["results"]["cuts"]}
+    # Top 25% of 400 is 100 places, so every deck we hold from "big" is inside it.
+    # At "small" it is 5 places, so 9th and 10th are outside.
+    check(
+        cuts["top25pct"]["vacuous_events"] == 1,
+        f"one event is not separated at all: {cuts['top25pct']}",
+    )
+    check(cuts["top25pct"]["events"] == 2, "out of two")
+    check(
+        cuts["top1"]["vacuous_events"] == 0,
+        f"a top-1 cut separates both: {cuts['top1']}",
+    )
+
+
+def test_shares_of_a_cut_are_shares_of_that_cut():
+    """The denominator is the decks that made the cut, not the field."""
+    decks = [_placed(s, players=100, event="e1") for s in (1, 2, 3, 40)]
+    report = _built(decks)
+    cuts = {cut["key"]: cut for cut in report["results"]["cuts"]}
+
+    # Top 10% of 100 is 10 places: three of the four decks.
+    check(cuts["top10pct"]["decks"] == 3, f"three made it: {cuts['top10pct']['decks']}")
+    check(
+        cuts["top10pct"]["share_of_field"] == 75.0,
+        f"which is 75% of the field: {cuts['top10pct']['share_of_field']}",
+    )
+
+    total = 0.0
+    for pair in report["pairs"]:
+        for variant in pair["variants"]:
+            result = variant["results"]["top10pct"]
+            total += result["share_of_cut"]
+            check(
+                result["decks"] <= variant["decks"],
+                f"{variant['label']}: {result['decks']} in the cut of {variant['decks']} decks",
+            )
+    check(99.0 <= total <= 101.0, f"archetype shares of the cut sum to {total:.1f}%")
+
+
+def test_a_cut_too_thin_to_read_is_marked_unusable():
+    """With three decks in a cut, every archetype in it is a third of "the winners"."""
+    decks = [_placed(s, players=100, event="e1") for s in range(1, 13)]
+    report = _built(decks)
+    cuts = {cut["key"]: cut for cut in report["results"]["cuts"]}
+
+    check(cuts["top1"]["decks"] == 1, f"one winner: {cuts['top1']['decks']}")
+    check(not cuts["top1"]["usable"], "so a share of the winners means nothing")
+    check(cuts["top25pct"]["usable"], f"a wider cut is readable: {cuts['top25pct']}")
+
+
+def test_conversion_counts_only_the_decks_the_cut_could_judge():
+    """A deck the cut cannot judge is missing information, not a bad finish.
+
+    Charging it as a failure would drag down whichever archetypes happen to sit on a
+    bracket boundary - the source publishes knockout brackets, so which archetypes
+    those are is an artefact of the labelling and nothing to do with the decks.
+    """
+    decks = [_placed(s, players=100, event="e1") for s in (1, 2, 50, 60)]
+    report = _built(decks)
+    variant = report["pairs"][0]["variants"][0]
+    result = variant["results"]["top10pct"]
+    check(variant["decks"] == 4, f"one archetype of four decks: {variant['decks']}")
+    check(result["decks"] == 2, f"two of them made the cut: {result['decks']}")
+    check(result["unknown"] == 0, f"all four were judged: {result['unknown']}")
+    check(result["conversion"] == 50.0, f"so two of four: {result['conversion']}")
+
+    # Now one deck the cut cannot place: a "Top8" bracket against a top-10 cut of a
+    # 100-player event is settled, so use a top-6 straddle by shrinking the event.
+    decks = [_placed(s, players=100, event="e1") for s in (1, 2, 50)]
+    decks.append(_placed(8, players=100, exact=False, best=5, event="e1"))
+    report = _built(decks)
+    variant = report["pairs"][0]["variants"][0]
+    result = variant["results"]["top10pct"]
+    check(variant["decks"] == 4, f"still four decks: {variant['decks']}")
+    check(result["decks"] == 3, f"the bracket is inside a top-10 cut too: {result}")
+
+    # A tighter cut is where the bracket straddles and cannot be judged.
+    tight = variant["results"]["top1"]
+    check(tight["decks"] == 1, f"one winner: {tight['decks']}")
+    check(tight["unknown"] == 0, f"5th-8th plainly did not win: {tight['unknown']}")
+
+    # 60 players makes the top 10% six places, which falls inside a 5th-8th bracket:
+    # that deck is genuinely unplaceable, and it must not count against the archetype.
+    decks = [_placed(s, players=60, event="e2") for s in (1, 2, 50)]
+    decks.append(_placed(8, players=60, exact=False, best=5, event="e2"))
+    variant = _built(decks)["pairs"][0]["variants"][0]
+    result = variant["results"]["top10pct"]
+    check(variant["decks"] == 4, f"four decks: {variant['decks']}")
+    check(result["unknown"] == 1, f"one of them cannot be placed: {result['unknown']}")
+    check(result["decks"] == 2, f"two are inside six places: {result['decks']}")
+    check(
+        result["conversion"] == 66.7,
+        f"two of the three it could judge, not two of four: {result['conversion']}",
+    )
+
+def test_a_rate_carries_the_interval_that_qualifies_it():
+    """40% from 25 lists and 40% from 3 are not the same claim.
+
+    The results chart ranks archetypes on this rate, so the rate alone would trade one
+    misleading order for another: a real field held a three-list archetype that
+    converted all three, and that sorts to the top of anything ranked on rate.
+    """
+    from lorcana_meta.analyze import MIN_RATE_DECKS, _wilson
+
+    low, high = _wilson(10, 25)
+    check((low, high) == (23.4, 59.3), f"10 of 25 spans 23.4-59.3, got {low}-{high}")
+    thin_low, thin_high = _wilson(3, 3)
+    check(thin_low < 50.0, f"3 of 3 is not a certainty: {thin_low}-{thin_high}")
+    check(thin_high == 100.0, "though it does reach the top")
+    wide = thin_high - thin_low
+    tight_low, tight_high = _wilson(26, 108)
+    check(
+        wide > (tight_high - tight_low) * 3,
+        f"three lists is far vaguer than a hundred: {wide} vs {tight_high - tight_low}",
+    )
+
+    # Wilson, not the normal interval, so a rate at the ends stays inside 0-100.
+    for successes, trials in ((0, 12), (12, 12), (1, 40)):
+        low, high = _wilson(successes, trials)
+        check(0.0 <= low <= high <= 100.0, f"{successes}/{trials} -> {low}-{high}")
+    check(_wilson(0, 0) == (0.0, 0.0), "an empty group does not divide by zero")
+    check(MIN_RATE_DECKS >= 8, f"the floor is at least the movement floor: {MIN_RATE_DECKS}")
+
+
+def test_the_report_publishes_the_denominator_behind_every_rate():
+    """A rate whose sample size is missing cannot be ranked, and the page needs both."""
+    decks = [_placed(s, players=60, event="e1") for s in (1, 2, 50)]
+    decks.append(_placed(8, players=60, exact=False, best=5, event="e1"))
+    report = _built(decks)
+    result = report["pairs"][0]["variants"][0]["results"]["top10pct"]
+
+    check(result["judged"] == 3, f"three of four could be placed: {result['judged']}")
+    check(result["decks"] == 2, f"two of those reached the cut: {result['decks']}")
+    check(result["conversion"] == 66.7, f"two of three: {result['conversion']}")
+    check(
+        result["conversion_low"] <= result["conversion"] <= result["conversion_high"],
+        f"the rate sits inside its own interval: {result}",
+    )
+    check(
+        report["results"]["min_rate_decks"] >= 8,
+        "and the floor travels to the page with it",
+    )
+
+
 def main() -> int:
     configure_output()
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]

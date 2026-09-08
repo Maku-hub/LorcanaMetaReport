@@ -183,6 +183,38 @@ def test_text_before_the_first_header_is_ignored():
     check(blocks[0][0]["deck_name"] == "Real", "the header after the junk is used")
 
 
+def test_a_deck_with_no_format_never_gets_the_word_None():
+    """`--format` defaults to nothing, and nothing must not become a format name.
+
+    The flag defaults to `None` so the CLI can tell "the user said nothing" from "the
+    user asked for this" - inkdecks names its own format and the flag is ignored there,
+    which it now says out loud instead of silently. But a `None` arriving intact turned
+    into the literal string "None" on any deck file without a `format` key, which is
+    the kind of thing that reaches a report heading and looks like a bug in the source
+    data.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        deck = {
+            "player": "P",
+            "standing": 1,
+            "tournament_name": "Cup",
+            "tournament_date": "2026-08-01",
+            "cards": [{"name": "Elsa - Snow Queen", "count": 60}],
+        }
+        Path(directory, "one.json").write_text(json.dumps([deck]), encoding="utf-8")
+
+        for fmt in (None, "", "Infinity Constructed"):
+            decks = LocalSource(directory, fmt=fmt).fetch(date(2020, 1, 1), date(2030, 1, 1))
+            check(bool(decks), f"the deck loaded with fmt={fmt!r}")
+            if not decks:
+                continue
+            got = decks[0].fmt
+            check(got != "None", f"fmt={fmt!r} did not become the word None, got {got!r}")
+            check(bool(got), f"fmt={fmt!r} left a format name, got {got!r}")
+            if fmt:
+                check(got == fmt, f"an explicit format survives: {got!r}")
+
+
 def main() -> int:
     configure_output()
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]

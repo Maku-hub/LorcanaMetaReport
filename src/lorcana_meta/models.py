@@ -63,6 +63,23 @@ class Deck:
     #: The placing exactly as the source worded it ("1st", "Top8"). Kept because a
     #: bucket and an exact placing are different claims and `standing` flattens them.
     standing_label: str = ""
+    #: The best placing this deck could have had. Equal to `standing` for an exact
+    #: result; for a bracket label it is the other end of the range, so "Top8" is
+    #: 5th-8th and carries `standing_best = 5`.
+    #:
+    #: A bracket is a range and one number cannot hold it. Reading only the worst end
+    #: meant no deck could ever be placed *outside* a cut - on real data that left
+    #: every one of 514 bracket-labelled decks as "cannot tell" for a top-8 cut, and
+    #: made every event look as though the cut excluded nothing.
+    standing_best: int | None = None
+    #: Whether `standing` is the deck's actual placing (`True`) or the end of a
+    #: bracket like "Top8" (`False`). `None` means the source did not say.
+    #:
+    #: This is the difference between a fact and a bound, and any cut finer than the
+    #: bucket depends on it: a deck labelled "Top8" carries `standing = 8`, but it may
+    #: have won the event, so asking "did it make the top 4" has no answer for it. Set
+    #: by whoever builds the Deck, never re-derived from the label downstream.
+    standing_exact: bool | None = None
     wins: int | None = None
     losses: int | None = None
     draws: int | None = None

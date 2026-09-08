@@ -31,6 +31,7 @@ const state = {
   typeFilter: "",
   showFringe: false, // the long tail of one-off cards on a pair page
   threatSort: "expected", // or "movement": what the field is picking up fastest
+  resultCut: null, // which result cut the winning chart is on; null = the report's own
   tables: new Set(), // ids of charts currently showing their table twin
 };
 
@@ -124,9 +125,22 @@ function cardButton(name) {
  * twin behind a toggle.
  *
  * rows: [{label, inks?, value, valueText, after?, href?, tooltip?}]
+ * options: {labelWidth?, notes?}
  *
  * `valueText` is escaped; `after` is markup we built ourselves (a movement delta) and
  * is inserted as-is. Nothing user-supplied may reach it.
+ *
+ * `notes` are the long-form caveats, behind a disclosure. They were once appended to
+ * the subtitle, one sentence per thing worth qualifying, and the results chart reached
+ * **331 words above a bar chart**. Every sentence was individually earned and the
+ * result was unreadable - and when everything is caveated at the same weight, the
+ * caveats that change how you read the chart are lost among the ones that do not. A
+ * warning nobody reads is not a warning.
+ *
+ * So the subtitle keeps only what you must read to not misread the chart, and the rest
+ * stays on the page one click away. Nothing is deleted: `tests/test_render.mjs` checks
+ * that each note is still there, and the print stylesheet opens every disclosure,
+ * because paper cannot be clicked.
  */
 function barChart(id, title, subtitle, rows, columns, options = {}) {
   const max = Math.max(...rows.map((r) => r.value), 0) || 1;
@@ -168,6 +182,14 @@ function barChart(id, title, subtitle, rows, columns, options = {}) {
         .join("")}</tbody>
     </table></div>`;
 
+  const notes = (options.notes || []).filter(Boolean);
+  const disclosure = notes.length
+    ? `<details class="notes">
+        <summary>How to read this, and what it leaves out</summary>
+        ${notes.map((note) => `<p>${note}</p>`).join("")}
+      </details>`
+    : "";
+
   return `<section class="card">
       <div class="card__head"><h2>${esc(title)}</h2></div>
       <p class="subtitle">${subtitle}</p>
@@ -177,6 +199,7 @@ function barChart(id, title, subtitle, rows, columns, options = {}) {
           ${showTable ? "Show chart" : "Show table"}
         </button>
       </div>
+      ${disclosure}
     </section>`;
 }
 
@@ -343,6 +366,357 @@ function movementNote() {
     playing them less.`;
 }
 
+/** The cut currently selected, falling back to the report's own default. */
+function activeCut() {
+  const cuts = state.meta.results.cuts;
+  return cuts.find((cut) => cut.key === state.resultCut) || cuts.find((cut) => cut.key === state.meta.results.default) || cuts[0];
+}
+
+/**
+ * What the win rate in this report actually measures, and its label.
+ *
+ * `record.win_rate` is wins over games among the decks in the group - and every deck
+ * in the report finished inside the fetched cut. A list that made the top 32 won most
+ * of its matches by definition, so all of these figures are high and the spread
+ * between them is squeezed. Measured against inkdecks' own matrix, which counts every
+ * match in the same events over the same window, these ran **11 points high in every
+ * ink pair without exception**, and 34 points of real spread arrived as 8.
+ *
+ * Calling it "match win rate" invited exactly the wrong reading: a pair at 55.6% here
+ * wins 36% of its games in the field. The label now names the sample.
+ */
+function winRateLabel() {
+  const top = state.meta.filters.top;
+  return top ? `Win rate, top-${num(top)} lists` : "Win rate, placed lists";
+}
+
+/** The caveat that has to travel with it wherever it is prominent. */
+function winRateNote() {
+  const top = state.meta.filters.top;
+  return `Every list here finished inside the${
+    top ? ` top ${num(top)}` : " fetched"
+  } cut, so these are win rates among decks that already placed - all of them high,
+  and closer together than the field really is. Read them against each other, never as
+  how often a deck wins.`;
+}
+
+/**
+ * A share of the top finishes against a share of the field, in percentage points.
+ *
+ * Over- or under-representation: an archetype taking more of the winners than its
+ * size would suggest. Kept as a table column and no longer what the chart ranks on -
+ * across a real 23-archetype field it spans only -1.7 to +3.6 points, and it
+ * correlated worse with an outside win rate than the conversion rate does.
+ */
+function liftPlain(shareOfCut, shareOfField) {
+  const value = Math.round((shareOfCut - shareOfField) * 10) / 10;
+  if (Math.abs(value) < 0.05) return "0.0 pp";
+  return `${value > 0 ? "+" : "−"}${num(Math.abs(value), 1)} pp`;
+}
+
+/**
+ * What the chosen cut can and cannot tell you.
+ *
+ * Both cuts on offer are biased and neither is neutral, so the bias is stated where
+ * the numbers are read rather than in a footnote. `vacuous_events` is the measured
+ * version of it: an event where the cut excludes nothing we hold is an event that
+ * hands every one of its decks to "the winners" for free.
+ */
+function cutNote(cut) {
+  const parts = [];
+  if (cut.key.endsWith("pct")) {
+    parts.push(
+      `A share of each event's own field, so a deep finish at a 200-player regional and
+       at a 24-player store event are weighed the same way.`
+    );
+  } else {
+    parts.push(
+      `The same fixed places at every event, so making it at a small event counts as
+       much as at a large one.`
+    );
+  }
+  parts.push(
+    `${num(cut.decks)} of ${num(state.meta.totals.decks)} decks made this cut
+     (${pct(cut.share_of_field)} of the field).`
+  );
+  if (cut.vacuous_events) {
+    parts.push(
+      `<b>At ${num(cut.vacuous_events)} of ${num(
+        cut.events
+      )} events this cut excludes nothing</b> we hold, so those decks are in it for
+       free and the comparison is weaker than it looks - a tighter cut separates them.`
+    );
+  }
+  if (cut.unknown) {
+    parts.push(
+      `${num(cut.unknown)} deck(s) could not be judged and are left out of these
+       figures rather than counted as failures. The source publishes knockout brackets
+       — "Top8" means 5th to 8th — so a cut that falls inside a bracket has no answer
+       for the decks in it. A cut on a bracket boundary leaves none.`
+    );
+  }
+  parts.push(winRateNote());
+  parts.push(
+    `Everything here is conditional on making the fetched cut${
+      state.meta.filters.top ? ` of top ${num(state.meta.filters.top)}` : ""
+    } in the first place - this is which of the decks already doing well go furthest,
+     not a win rate against a whole tournament.`
+  );
+  return parts.join(" ");
+}
+
+/**
+ * Archetypes ranked by their share of the winners, not by how many people played them.
+ *
+ * Every other chart in this report is a popularity axis. This is the results axis, and
+ * on real data the two disagree sharply: the most played archetype in a 62-deck field
+ * took 18% of the field and 6% of the top finishes.
+ */
+/**
+ * The archetype converting most of its lists into top finishes.
+ *
+ * Ranked on the rate, not on the gap between two shares. That gap - a share of the
+ * top finishes minus a share of the field - runs from -1.7 to +3.6 points across a
+ * real 23-archetype field, so it reads as noise, and it correlated worse with an
+ * outside win rate (+0.56 against conversion's +0.79) on the only external check
+ * available.
+ */
+function bestConverterTile() {
+  const results = state.meta.results;
+  const cut = results.cuts.length && results.rankable ? activeCut() : null;
+  if (!cut || !cut.usable) {
+    return tile("Best converter", "–", "not enough results to say", "text");
+  }
+  const ranked = convertingArchetypes(cut);
+  if (!ranked.length) {
+    return tile(
+      "Best converter",
+      "–",
+      `no archetype has ${num(state.meta.results.min_rate_decks)} judged lists yet`,
+      "text"
+    );
+  }
+
+  const best = ranked[0];
+  const result = best.results[cut.key];
+  const tied = ranked
+    .slice(1)
+    .filter((a) => a.results[cut.key].conversion_high >= result.conversion_low).length;
+  return tile(
+    "Best converter",
+    pct(result.conversion),
+    `${esc(best.label)} — ${num(result.decks)} of ${num(result.judged)} lists reached
+     ${esc(cut.label.toLowerCase())} (${pct(result.conversion_low)}–${pct(
+      result.conversion_high
+    )})${
+      tied
+        ? `. ${num(tied)} other archetype(s) are not measurably worse`
+        : ""
+    }`
+  );
+}
+
+/**
+ * Archetypes whose conversion rate is worth charting, best first.
+ *
+ * The floor is not decoration. On a real field one archetype held three lists and
+ * converted all three, and a chart ranked on rate puts that at the top - swapping the
+ * old wrong leader (the biggest archetype) for a new one.
+ */
+function convertingArchetypes(cut) {
+  const floor = state.meta.results.min_rate_decks || 0;
+  return allArchetypes()
+    .filter((archetype) => (archetype.results[cut.key].judged || 0) >= floor)
+    .sort(
+      (a, b) =>
+        b.results[cut.key].conversion - a.results[cut.key].conversion ||
+        b.results[cut.key].judged - a.results[cut.key].judged ||
+        a.label.localeCompare(b.label)
+    );
+}
+
+/** The interval on a rate, so a number from eight lists cannot pass for a finding. */
+function intervalText(low, high) {
+  return `<span class="interval" title="${esc(
+    `95% interval: ${pct(low)} to ${pct(high)}`
+  )}">${pct(low, 0)}–${pct(high, 0)}</span>`;
+}
+
+/**
+ * How much of the order on this chart the data actually supports.
+ *
+ * A sorted bar chart reads as a ranking whether or not one exists. On a real 837-deck
+ * field over three weeks, **every** charted archetype's interval overlapped the
+ * leader's - not one was clearly worse - so the order was an artefact of point
+ * estimates on a few dozen lists each. Saying "these are indistinguishable" is both
+ * more honest and more useful than an implied first place.
+ *
+ * Counted against the leader rather than pairwise, because that is the comparison a
+ * reader makes: is the top of this chart really the best deck?
+ */
+function separationNote(shown, cut) {
+  if (shown.length < 2) return "";
+  const leader = shown[0].results[cut.key];
+  const rest = shown.slice(1).map((a) => a.results[cut.key]);
+  const overlapping = rest.filter((r) => r.conversion_high >= leader.conversion_low);
+  const clear = rest.length - overlapping.length;
+
+  if (!clear) {
+    return `<b>The order here is not a ranking.</b> Every one of the other ${num(
+      rest.length
+    )} archetypes has an interval overlapping ${esc(
+      shown[0].label
+    )}'s, so on this much data none of them is measurably worse than the top of the
+    chart. Read it as a shortlist, not a league table.`;
+  }
+  return `${esc(shown[0].label)} leads, and ${num(
+    clear
+  )} of the other ${num(rest.length)} archetypes are clearly behind it - their
+  intervals do not reach its lower end. The remaining ${num(
+    overlapping.length
+  )} overlap it and are not measurably worse.`;
+}
+
+/**
+ * Archetypes by how often their lists reach the top finishes.
+ *
+ * Every other chart in this report is a popularity axis. This is the results axis,
+ * and it used to be ranked by share of the top finishes - which put the largest
+ * archetype first because it was largest, under a heading saying "what is winning".
+ * On a real field the leader was a deck with a *negative* lift.
+ */
+function winningChart() {
+  const results = state.meta.results;
+  if (!results.cuts.length || !results.rankable) {
+    return `<section class="card">
+        <div class="card__head"><h2>What is winning</h2></div>
+        <p class="subtitle">
+          <b>Not in this report.</b> ${
+            results.cuts.length
+              ? `It was built before conversion rates carried the number of lists behind
+                 them, and a rate cannot be ranked without that - a three-list
+                 archetype would sit on top.`
+              : "It was built before results were measured."
+          }
+          Rebuild it to see which archetypes convert their lists into top finishes.
+        </p>
+      </section>`;
+  }
+  const cut = activeCut();
+  const picker = `<div class="filters">
+      <label for="result-cut">Result cut</label>
+      <select id="result-cut">
+        ${results.cuts
+          .map(
+            (option) =>
+              `<option value="${esc(option.key)}"${
+                option.key === cut.key ? " selected" : ""
+              }>${esc(option.label)}${option.usable ? "" : " (too few decks)"}</option>`
+          )
+          .join("")}
+      </select>
+    </div>`;
+
+  if (!cut.usable) {
+    return `<section class="card">
+        <div class="card__head"><h2>What is winning</h2></div>
+        <p class="subtitle">
+          <b>Not shown for this cut.</b> Only ${num(cut.decks)} deck(s) in this field
+          made ${esc(cut.label.toLowerCase())}, and ${num(
+            results.min_cut_decks
+          )} are needed before a rate against them means anything.
+          ${cut.unknown ? `${num(cut.unknown)} deck(s) could not be judged at all.` : ""}
+          Pick a wider cut.
+        </p>
+        ${picker}
+      </section>`;
+  }
+
+  const shown = convertingArchetypes(cut);
+  const all = allArchetypes();
+  const rows = shown.map((archetype) => {
+    const result = archetype.results[cut.key];
+    return {
+      label: archetype.label,
+      inks: archetype.pair.inks,
+      value: result.conversion,
+      valueText: pct(result.conversion),
+      after: intervalText(result.conversion_low, result.conversion_high),
+      href: `#/pair/${archetype.pair.key}/${archetype.key}`,
+      archetype,
+      result,
+      tooltip: {
+        title: archetype.label,
+        rows: [
+          [`Lists reaching ${cut.label.toLowerCase()}`, `${num(result.decks)} of ${num(result.judged)}`],
+          ["Conversion", `${pct(result.conversion)} (${pct(result.conversion_low)}–${pct(result.conversion_high)})`],
+          ["Share of those finishes", pct(result.share_of_cut)],
+          ["Share of the field", pct(archetype.share_of_field)],
+          [winRateLabel(), pct(archetype.record.win_rate)],
+        ],
+      },
+    };
+  });
+
+  const chart = barChart(
+    "winning",
+    "What is winning",
+    `How often each archetype's lists reach ${esc(cut.label.toLowerCase())} — the one
+     place in this report ranked on results rather than on how many people played it.
+     ${separationNote(shown, cut)}`,
+    rows,
+    [
+      { label: "Archetype", cell: (r) => esc(r.label) },
+      {
+        label: "Conversion",
+        num: true,
+        cell: (r) =>
+          `${pct(r.result.conversion)} (${pct(r.result.conversion_low)}–${pct(
+            r.result.conversion_high
+          )})`,
+      },
+      {
+        label: `Reached ${cut.label.toLowerCase()}`,
+        num: true,
+        cell: (r) => `${num(r.result.decks)} of ${num(r.result.judged)}`,
+      },
+      { label: "Share of those", num: true, cell: (r) => pct(r.result.share_of_cut) },
+      { label: "Share of field", num: true, cell: (r) => pct(r.archetype.share_of_field) },
+      {
+        label: "Above/below",
+        num: true,
+        cell: (r) => liftPlain(r.result.share_of_cut, r.archetype.share_of_field),
+      },
+      { label: winRateLabel(), num: true, cell: (r) => pct(r.archetype.record.win_rate) },
+    ],
+    {
+      labelWidth: "260px",
+      notes: [
+        rateCoverage(cut, shown, all),
+        `Each rate carries its 95% interval, because a rate from ten lists and one from
+         a hundred are not the same claim.`,
+        cutNote(cut),
+      ],
+    }
+  );
+
+  return chart.replace('<p class="subtitle">', `${picker}<p class="subtitle">`);
+}
+
+/** How much of the field a rate-ranked chart can speak for, in arithmetic. */
+function rateCoverage(cut, shown, all) {
+  const floor = state.meta.results.min_rate_decks || 0;
+  const left = all.length - shown.length;
+  if (!left) return `Every archetype in the field has enough lists to rank.`;
+  const total = state.meta.totals.decks || 1;
+  const inChart = shown.reduce((sum, a) => sum + a.decks, 0);
+  return `${num(shown.length)} of ${num(all.length)} archetypes have the ${num(
+    floor
+  )} judged lists a rate needs, and they are ${pct(
+    (100 * inChart) / total
+  )} of the field; the other ${num(left)} are too small to rank and are not charted.`;
+}
+
 function renderOverview() {
   const meta = state.meta;
   const { totals, period, pairs, inks, filters } = meta;
@@ -367,6 +741,7 @@ function renderOverview() {
         topPair ? pct(topPair.share) : "–",
         topPair ? esc(topPair.label) : ""
       )}
+      ${bestConverterTile()}
       ${tile("Format", esc(filters.format || "–"), esc(meta.source.name), "text")}
     </div>`;
 
@@ -375,9 +750,7 @@ function renderOverview() {
     "Archetypes by share of the field",
     `Decks grouped by what is in them rather than what players called them, so one deck
      under five names counts once and two different decks sharing an ink pair count
-     separately. Named after the cards that distinguish them.
-     ${brewCoverage()}
-     ${movementNote()}`,
+     separately. Named after the cards that distinguish them.`,
     archetypes.map((archetype) => ({
       label: archetype.label,
       inks: archetype.pair.inks,
@@ -391,7 +764,7 @@ function renderOverview() {
           ["Ink pair", archetype.pair.label],
           ["Share of field", pct(archetype.share_of_field)],
           ["Decks", num(archetype.decks)],
-          ["Match win rate", pct(archetype.record.win_rate)],
+          [winRateLabel(), pct(archetype.record.win_rate)],
           [
             "Players called it",
             archetype.named_by_players.map((n) => n.name).join(", ") || "unnamed",
@@ -407,6 +780,11 @@ function renderOverview() {
         label: "Decks",
         num: true,
         cell: (r) => num(archetypes.find((a) => a.label === r.label).decks),
+      },
+      {
+        label: winRateLabel(),
+        num: true,
+        cell: (r) => pct(archetypes.find((a) => a.label === r.label).record.win_rate),
       },
       ...(meta.trend.usable
         ? [
@@ -428,7 +806,7 @@ function renderOverview() {
           ),
       },
     ],
-    { labelWidth: "300px" }
+    { labelWidth: "300px", notes: [brewCoverage(), movementNote()] }
   );
 
   const pairRows = pairs.map((pair) => ({
@@ -443,7 +821,7 @@ function renderOverview() {
       rows: [
         ["Share of field", pct(pair.share)],
         ["Decks", num(pair.decks)],
-        ["Match win rate", pct(pair.record.win_rate)],
+        [winRateLabel(), pct(pair.record.win_rate)],
         ["Average placing", num(pair.record.avg_standing, 1)],
         ...(meta.trend.usable ? [["Movement", deltaPlain(pair.trend)]] : []),
       ],
@@ -454,7 +832,7 @@ function renderOverview() {
     "pairs",
     "Ink pair share of the field",
     `Every deck that placed inside the cut, grouped by its two inks. Click a row for its
-     card list. ${movementNote()}`,
+     card list.`,
     pairRows,
     [
       { label: "Ink pair", cell: (r) => `${inkPairChips(r.inks)} ${esc(r.label)}` },
@@ -473,7 +851,8 @@ function renderOverview() {
             },
           ]
         : []),
-    ]
+    ],
+    { notes: [movementNote()] }
   );
 
   const inkRows = inks.map((ink) => ({
@@ -496,7 +875,7 @@ function renderOverview() {
     "inks",
     "Single ink presence",
     `How many decks play each ink at all. A two-ink deck counts towards both, so these
-     sum to about 200%. ${movementNote()}`,
+     sum to about 200%.`,
     inkRows,
     [
       { label: "Ink", cell: (r) => `${inkPairChips(r.inks)} ${esc(r.label)}` },
@@ -515,7 +894,8 @@ function renderOverview() {
             },
           ]
         : []),
-    ]
+    ],
+    { notes: [movementNote()] }
   );
 
   return `<h1>The field right now</h1>
@@ -529,6 +909,7 @@ function renderOverview() {
     ${kpis}
     ${caveats()}
     <div class="grid">${archetypeChart}</div>
+    <div class="grid">${winningChart()}</div>
     <div class="grid grid--2">${pairChart}${inkChart}</div>`;
 }
 
@@ -605,7 +986,7 @@ function renderPair(arg) {
   const record = scope.record;
   const kpis = `<div class="kpis">
       ${tile("Share of field", pct(share), `${num(scope.decks)} decks`, "hero")}
-      ${tile("Match win rate", pct(record.win_rate), `${num(record.wins)}-${num(
+      ${tile(winRateLabel(), pct(record.win_rate), `${num(record.wins)}-${num(
         record.losses
       )}-${num(record.draws)}`)}
       ${tile("Average placing", num(record.avg_standing, 1), `${num(
@@ -817,7 +1198,7 @@ function renderPair(arg) {
                   ${meter(v.share_of_pair, 100, pct(v.share_of_pair, 0))}
                   <div class="archetype__meta">
                     ${num(v.decks)} decks · ${pct(v.share_of_field)} of the field ·
-                    ${pct(v.record.win_rate)} match win rate
+                    ${pct(v.record.win_rate)} win rate in the cut
                   </div>
                   ${
                     v.signature.length
@@ -1108,7 +1489,23 @@ function renderAbout() {
         <ul class="subtitle">
           <li>Only events on the source platform are counted. It is a sample of the meta, not a census.</li>
           <li>A standing with no submitted decklist contributes nothing, which can bias a field toward players who share lists.</li>
-          <li>Inclusion rates say what people played, not what won. Win rate per pair is a small-sample number - treat it as a hint.</li>
+          <li>Inclusion rates say what people played, not what won.</li>
+          <li>
+            ${winRateNote()} Against a source counting every match in the same events,
+            these ran about 11 points high in every ink pair, and a 34-point spread
+            arrived as 8.
+          </li>
+          <li>
+            Nothing here separates the deck from the pilot. An archetype can take more
+            than its share of the top finishes because strong players chose it, and this
+            data cannot tell that apart from the deck being better.
+          </li>
+          <li>
+            The results cuts are conditional on making the fetched cut${
+              meta.filters.top ? ` of top ${num(meta.filters.top)}` : ""
+            }: they say which of the decks already doing well went furthest, not how
+            often a deck wins against a whole tournament.
+          </li>
           <li>
             ${
               meta.trend.usable
@@ -1387,6 +1784,10 @@ function attachEvents() {
       state.threatSort = event.target.value;
       render();
     }
+    if (event.target.id === "result-cut") {
+      state.resultCut = event.target.value;
+      render();
+    }
   });
 
   // Hover layer: any mark carrying data-tip gets a tooltip, keyboard focus included.
@@ -1476,6 +1877,24 @@ function withDefaults(meta) {
       min_decks_per_row: 0,
     };
   }
+  // A report built before the results axis existed. An empty cut list is what
+  // `winningChart` reads as "this report cannot answer that", and it says so rather
+  // than throwing on the way past.
+  if (!meta.results) {
+    meta.results = { cuts: [], default: "", min_cut_decks: 0, min_rate_decks: 0 };
+  }
+  // A report from between the two - it has cuts, but its rates carry no denominator
+  // and no interval. Ranking on those is worse than not ranking: with `judged`
+  // missing the deck floor reads as zero, and a three-list archetype that converted
+  // all three tops a chart titled "what is winning". Found exactly that way.
+  meta.results.rankable = meta.results.cuts.some((cut) =>
+    (meta.pairs || []).some((pair) =>
+      (pair.variants || []).some(
+        (variant) => (variant.results || {})[cut.key] &&
+          variant.results[cut.key].judged !== undefined
+      )
+    )
+  );
   return meta;
 }
 

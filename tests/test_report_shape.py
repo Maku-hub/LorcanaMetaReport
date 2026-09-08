@@ -45,9 +45,20 @@ READ_ELSEWHERE = {
     ".totals.variants": "tests/check_report.py - 'no archetypes' plus the summary line",
 }
 
-# Maps whose keys are values, not field names: the card index is keyed by card name,
-# a copy spread by the number of copies. Their keys are data and change with the field.
-DATA_KEYED = {"cards", "copies_spread"}
+# Maps whose keys are data rather than field names, listed by full path with what
+# their keys are. By path and not by name, because `results` is a cut-keyed map on a
+# pair and a plain block at the top level - one name, two shapes - and a name-based
+# rule silently applied the wrong one to both.
+#
+# An unlisted dynamic map fails this file until it is listed, which is the right way
+# round: the exceptions are enumerated.
+DATA_KEYED_PATHS = {
+    ".cards": "keyed by card name",
+    ".pairs[].cards[].copies_spread": "keyed by number of copies",
+    ".pairs[].variants[].cards[].copies_spread": "keyed by number of copies",
+    ".pairs[].results": "keyed by result-cut id",
+    ".pairs[].variants[].results": "keyed by result-cut id",
+}
 
 
 def check(condition, message):
@@ -168,11 +179,17 @@ def _paths(report: dict) -> list[str]:
 
     def walk(node, path):
         if isinstance(node, dict):
-            keyed_by_data = path.rsplit(".", 1)[-1] in DATA_KEYED
+            if path in DATA_KEYED_PATHS:
+                # A computed key hop: "{}" marks it, so the matcher knows the access
+                # path is broken here and falls back to the field name. Carrying the
+                # flag instead of marking it kept it set one level too deep, and every
+                # field of a card payload went unchecked as a result.
+                for value in list(node.values())[:3]:
+                    walk(value, f"{path}{{}}")
+                return
             for key, value in node.items():
-                if not keyed_by_data:
-                    found.add(f"{path}.{key}")
-                walk(value, path if keyed_by_data else f"{path}.{key}")
+                found.add(f"{path}.{key}")
+                walk(value, f"{path}.{key}")
         elif isinstance(node, list):
             for value in node[:3]:  # shapes repeat; three is enough to see them all
                 walk(value, f"{path}[]")
@@ -201,6 +218,19 @@ def _reads(js: str, key: str) -> bool:
     return re.search(rf"\b{re.escape(key)}\b", js) is not None
 
 
+def _reads_property(js: str, key: str) -> bool:
+    """Is this field accessed as a property anywhere in the page?
+
+    Property access rather than the bare word, so a helper named `liftText` does not
+    pass for a field called `edge`, and the literal " lore" in a badge label does not
+    pass for `cards{}.lore`.
+    """
+    return (
+        re.search(rf"\.{re.escape(key)}\b", js) is not None
+        or re.search(rf"\[[\"']{re.escape(key)}[\"']\]", js) is not None
+    )
+
+
 def _reads_path(js: str, path: str) -> bool:
     """Does `app.js` read this exact field, rather than something of the same name?
 
@@ -215,8 +245,11 @@ def _reads_path(js: str, path: str) -> bool:
     statically without parsing the JavaScript, so those fall back to the name.
     """
     segments = [s for s in path.split(".") if s]
-    if len(segments) < 2 or segments[-2].endswith("[]"):
-        return _reads(js, segments[-1])
+    # A list index or a computed key breaks the chain, and following it would mean
+    # parsing the JavaScript. Those fall back to a property access on the field name -
+    # `.lore`, not the word "lore", which also appears in the label beside the number.
+    if len(segments) < 2 or segments[-2].endswith(("[]", "{}")):
+        return _reads_property(js, segments[-1])
     parent, key = segments[-2], segments[-1]
     return (
         re.search(rf"\b{re.escape(parent)}\??\.{re.escape(key)}\b", js) is not None
@@ -239,8 +272,11 @@ def test_stripped_fields_have_no_reader():
     js = _readable_js()
     for group, keys in _INTERNAL_FIELDS.items():
         for key in keys:
+            # Property access, not the bare word: a helper named `liftText` is not a
+            # reader of `signature[].edge`, and matching the word made an unrelated
+            # name collision look like a broken page.
             check(
-                not _reads(js, key),
+                not _reads_property(js, key),
                 f"app.js reads {key!r}, but _lean strips it ({group}) - the page would "
                 f"show undefined",
             )

@@ -193,29 +193,44 @@ def _soup(html: str):
     return BeautifulSoup(html, "html.parser")
 
 
-def parse_standing(text: str) -> tuple[int | None, str]:
-    """Turn a placing label into a number plus the label as shown.
+def parse_standing(text: str) -> tuple[int | None, str, bool | None, int | None]:
+    """Turn a placing label into a range: worst place, label, exactness, best place.
 
-    The site mixes exact placings ("1st", "20th") with buckets ("Top8"). A bucket
-    becomes its upper bound - "Top8" means "finished no worse than 8th" - so it
-    stays comparable with an exact placing without ever overstating a result. The
-    original label is kept so the report can show what the source actually said.
+    The site labels each deck with the tightest descriptor it has - "1st", "2nd",
+    "3rd" where the placing is known, and a knockout bracket otherwise. The brackets
+    are therefore **disjoint**: a deck shown as "Top8" is one the site did not call
+    1st, 2nd, 3rd or Top4, so it went out in the quarter-finals and finished 5th-8th.
+    "Top16" is 9th-16th, "Top32" is 17th-32nd - places `K // 2 + 1` through `K`.
+
+    Confirmed against a real 842-deck field, where the only exact labels were 1st,
+    2nd and 3rd and every other deck carried a bracket. Reading a bracket as nothing
+    but "no worse than K" made the other 706 decks unplaceable: not one of them could
+    be ruled *out* of a top-8 cut, so the cut excluded nothing at every event.
+
+    The range is what makes a cut answerable. "Top8" against a top-8 cut is inside it;
+    against a top-4 cut it is outside; against a top-6 cut the bracket straddles the
+    line and the honest answer is that we cannot tell.
     """
     label = (text or "").strip()
     if not label:
-        return None, ""
+        return None, "", None, None
 
     exact = _ORDINAL.match(label)
     if exact:
-        return int(exact.group(1)), label
+        place = int(exact.group(1))
+        return place, label, True, place
 
-    bucket = _BUCKET.match(label)
-    if bucket:
-        return int(bucket.group(1)), label
+    bracket = _BUCKET.match(label)
+    if bracket:
+        worst = int(bracket.group(1))
+        # The round below this one is where the better half went, so this bracket
+        # starts just past it. Top8 -> 5, Top16 -> 9, Top4 -> 3.
+        return worst, label, False, worst // 2 + 1
 
     if label.isdigit():
-        return int(label), label
-    return None, label
+        place = int(label)
+        return place, label, True, place
+    return None, label, None, None
 
 
 class ReadOnlySession:
@@ -536,6 +551,8 @@ class InkdecksSource:
             cards=cards,
             standing=stub["standing"],
             standing_label=stub["standing_label"],
+            standing_exact=stub["standing_exact"],
+            standing_best=stub["standing_best"],
             wins=stub["wins"],
             losses=stub["losses"],
             draws=stub["draws"],
@@ -862,7 +879,9 @@ def parse_index_page(html: str) -> list[dict]:
         text = row.get_text(" ", strip=True)
 
         strong = row.find("strong")
-        standing, standing_label = parse_standing(strong.get_text(strip=True) if strong else "")
+        standing, standing_label, standing_exact, standing_best = parse_standing(
+            strong.get_text(strip=True) if strong else ""
+        )
 
         record = _RECORD.search(text)
         players = _PLAYERS.search(text)
@@ -903,6 +922,8 @@ def parse_index_page(html: str) -> list[dict]:
                 "player": player or "Unknown",
                 "standing": standing,
                 "standing_label": standing_label,
+                "standing_exact": standing_exact,
+                "standing_best": standing_best,
                 "wins": int(record.group(1)) if record else None,
                 "losses": int(record.group(2)) if record else None,
                 "draws": int(record.group(3)) if record else None,

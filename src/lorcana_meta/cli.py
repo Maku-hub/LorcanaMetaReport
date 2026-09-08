@@ -22,6 +22,9 @@ from .sources import InkdecksSource, LocalSource, SourceError
 
 log = logging.getLogger("lorcana_meta")
 
+#: What to call a format when the source does not name one and the flag is silent.
+DEFAULT_FORMAT = "Core Constructed"
+
 CARD_DB_CREDIT = {
     "name": "lorcana-api.com",
     "url": "https://lorcana-api.com/",
@@ -164,10 +167,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     local.add_argument(
         "--format",
-        default="Core Constructed",
+        default=None,
         dest="fmt",
-        help="format label for these decks, which carry none themselves "
-        "(default: Core Constructed)",
+        help="format label for decks that carry none themselves - the local source "
+        "only. inkdecks names its own format from --inkdecks-category, so this is "
+        "ignored there (default: Core Constructed)",
     )
     build.add_argument(
         "--out",
@@ -178,6 +182,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--refresh-cards", action="store_true", help="re-download the card database"
     )
     build.add_argument("--indent", type=int, default=None, help="pretty-print the JSON")
+    # On by default: for the default source the single file is the only way to read
+    # the report, and leaving it as a second command let it go silently stale.
+    build.add_argument(
+        "--no-bundle",
+        dest="bundle",
+        action="store_false",
+        help="skip writing report.html (the data alone is enough when serving site/)",
+    )
+    build.add_argument(
+        "--bundle-out",
+        default="report.html",
+        help="where to write the single-file report (default: report.html)",
+    )
     build.add_argument("-v", "--verbose", action="store_true")
 
     return parser.parse_args(argv)
@@ -310,6 +327,33 @@ def _lean(report: dict) -> dict:
     return report
 
 
+def _bundle(data: Path, out: Path) -> int:
+    """Write the single-file report, as the last step of a build.
+
+    Folded into `build` rather than left as a second command, and not for the
+    keystroke: the two-step version let `report.html` go quietly stale. Rebuild the
+    data, forget the bundle, open the file - it renders perfectly and shows last
+    week's meta. The embedded build stamp is the only clue, and it only helps someone
+    who thinks to look.
+
+    For the default source the bundle is not optional anyway: an inkdecks report may
+    not be published, so the local file is the only way to read it.
+    """
+    from .bundle import SITE
+    from .bundle import build as bundle_build
+
+    index = SITE / "index.html"
+    if not index.exists():
+        log.warning(
+            "no %s, so no single-file report was written. Bundling needs the site "
+            "directory from a checkout; the data itself is in %s",
+            index,
+            data,
+        )
+        return 0
+    return bundle_build(index, data, out)
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     start, end = _resolve_window(args)
     source = _build_source(args)
@@ -334,6 +378,15 @@ def cmd_build(args: argparse.Namespace) -> int:
                 before - len(decks),
             )
 
+    if args.fmt and getattr(source, "fmt", None):
+        log.warning(
+            "--format %r ignored: %s names its own format (%r). The flag is for a "
+            "source that carries none, such as --source local.",
+            args.fmt,
+            source.name,
+            source.fmt,
+        )
+
     index = CardIndex.load(refresh=args.refresh_cards)
     log.info("card database: %d printings", len(index))
 
@@ -351,8 +404,11 @@ def cmd_build(args: argparse.Namespace) -> int:
         },
         filters={
             # The source knows better than the flag: inkdecks selects by category,
-            # and "all" means the format is per deck rather than one label.
-            "format": getattr(source, "fmt", args.fmt),
+            # and "all" means the format is per deck rather than one label. `--format`
+            # is for a source that carries no format of its own, and it used to be
+            # silently ignored by the default source - a flag that looks like it does
+            # something and does not.
+            "format": getattr(source, "fmt", None) or args.fmt or DEFAULT_FORMAT,
             "top": args.top,
             "min_players": args.min_players,
             "min_pair_decks": args.min_pair_decks,
@@ -390,12 +446,17 @@ def cmd_build(args: argparse.Namespace) -> int:
     if not report["source"].get("publishable", True):
         log.warning(
             "this report is built from data licensed for private use, so it is marked "
-            "unpublishable: tests/check_report.py will refuse it and the Pages workflow "
-            "will not deploy it. Read it locally instead: python tools/bundle_report.py"
+            "unpublishable: tests/check_report.py will refuse it. The single file "
+            "written beside it is the way to read it."
         )
     if not totals["decks"]:
         log.error("no decks in the report - check the window, the format and the source")
         return 1
+
+    if args.bundle:
+        code = _bundle(out, Path(args.bundle_out))
+        if code:
+            return code
     return 0
 
 

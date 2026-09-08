@@ -53,7 +53,7 @@ Access control is Enterprise Cloud only, and only for organization-owned
 repositories. A personal Free or Pro account cannot make a Pages site private at all
 — private repo, world-readable page, guessable URL.
 
-Hence `tools/bundle_report.py`: CSS, JavaScript and data inlined into one
+Hence `lorcana_meta/bundle.py`, run at the end of every build: CSS, JavaScript and data inlined into one
 `report.html` that opens from the filesystem. Verified in headless Chrome over
 `file://` **without** `--allow-file-access-from-files`, which is the difference
 between self-contained and nearly.
@@ -555,7 +555,411 @@ extra specificity, so the ordinary rules that followed it were quietly winning.
 
 ---
 
-## 14. Things deliberately not done
+## 14. A results axis, and why the cut is the reader's choice
+
+Everything in the report was a popularity axis: how many people played a deck. None of
+it said whether the deck won. The two are routinely different, and on a real field they
+disagreed sharply - the most played archetype held **19.4% of the field and 11.1% of
+the top-8 finishes**, with the lowest match win rate on the board. The overview opened
+with a chart that put it first and gave no hint of any of that.
+
+The data was already there. `top8_decks` was computed and displayed as a bare count on
+one page; `win_rate` existed and lived in a tooltip. What was missing was the
+comparison: a share of the winners against a share of the field.
+
+### Neither cut is neutral, so both are offered
+
+An absolute cut ("top 8") is the same eight places at every event, so making it at a
+24-player store event counts the same as at a 210-player regional. A percentage cut
+("top 10%") fixes that and introduces its own problem: it interacts with `--top N`.
+Where the fetched cut is deeper than the percentage, a large event contributes nearly
+every deck it has to the "winners" pool while a small one contributes only its
+winners.
+
+Rather than pick one and describe the bias in prose, each cut **measures** it.
+`vacuous_events` counts the events where the cut excludes nothing we hold - the events
+it hands to the winners for free. Measured on a real-shaped field:
+
+| cut | in the cut | of the field | excludes nothing at |
+|---|---|---|---|
+| Event wins | 2 | 3% | 0 of 4 events |
+| Top 10% | 22 | 35% | 0 of 4 events |
+| Top 8 | 18 | 29% | 0 of 4 events |
+| Top 25% | 41 | 66% | **2 of 4 events** |
+
+That decided the default. Top 25% holds two thirds of the field and separates nothing
+at half the events, so it is offered with the warning attached rather than chosen. Top
+10% is the default because it normalises event size and still excluded decks
+everywhere. Event wins is honest and too thin - two winners in a 62-deck field, below
+`MIN_CUT_DECKS`, so it is withheld with its arithmetic rather than charted as noise.
+
+### A bucket is a bound, and "cannot tell" is not "no"
+
+inkdecks mixes exact placings with buckets, and `parse_standing` already mapped "Top8"
+to 8 as an upper bound. That is right for a top-8 cut and wrong for anything tighter: a
+deck labelled "Top8" may have won the event, so against a top-4 cut it has no answer.
+Answering "no" would move winners out of the winners' column - a wrong number that
+still looks completely sane, in the one place someone might change their deck over.
+
+So `standing_exact` now travels with the placing, `_in_cut` returns three-valued
+`True` / `False` / `None`, and only a placing known to be exact can put a deck
+*outside* a cut. Decks a cut cannot judge are counted and named on the page.
+
+Everything on this axis is also conditional on having made the fetched `--top N` cut,
+which is stated where the numbers are: it is which of the decks already doing well went
+furthest, not a win rate against a whole tournament.
+
+### Three things this pass found by accident
+
+**The sample generator was producing impossible tournaments.** Placings were drawn with
+`rng.randint`, so three decks could share 1st place in one event. Every cut computed
+against that data would have been meaningless, and the tests would have validated it.
+Placings are now dealt without replacement.
+
+**The thin-pair filter had to move, and a guard was quietly wrong.** Moving it into
+`build_meta` (§13) changed `totals.decks` from "everything that resolved" to "the field
+the report describes". `check_report.py` was still subtracting the dropped decks a
+second time and only said so once a real drop occurred. It now asserts the funnel
+instead: resolved equals field plus dropped.
+
+**`test_report_shape.py` was checking less than it appeared to.** Three separate
+holes, each found by a mutation rather than by the test failing on its own:
+
+* the `DATA_KEYED` flag was carried down instead of marked, so it stayed set one level
+  too deep and **every field of a card payload went unchecked** - `cost`, `text`,
+  `image`, all of it. Dynamic-key hops are now marked `{}` in the path and the flag
+  applies to exactly one level.
+* `DATA_KEYED` was keyed by field *name*, and `results` is a cut-keyed map on a pair
+  but a plain block at the top level. One name, two shapes, and the rule silently
+  applied the wrong one to both. It is keyed by full path now, each entry naming what
+  its keys are.
+* the fallback for list elements matched the bare word, so the literal " lore" in a
+  badge label passed for `cards{}.lore`, and a helper named `edgeText` passed for the
+  `edge` field that `_lean` strips. It requires a property access now.
+
+Path coverage went from 148 to 190 fields. One limitation stays, documented: a field
+under a list index cannot be chain-matched without parsing the JavaScript, so
+`results.cuts[].share_of_field` is satisfied by `archetype.share_of_field`. Building a
+JS parser to close that is not worth it.
+
+**And the heredoc trap caught me again.** Writing that regex through a shell heredoc
+turned `\b` into a literal backspace, so the pattern was `\.totals\x08` and never
+matched anything - the test passed while checking nothing. CLAUDE.md warns about this
+for Windows paths; it applies to regex escapes just as well. Use the editing tools for
+anything containing a backslash.
+
+---
+
+## 15. What the first real report caught
+
+The results axis was built and tested against synthetic data where every placing was
+an exact number. The first build from inkdecks showed what the source actually
+publishes, and two things were wrong.
+
+### Placings are brackets, and a bracket is a range
+
+Across 842 cached decks the only exact labels were **1st (48), 2nd (43), 3rd (45)**.
+Everything else carried `Top4` (44), `Top8` (148), `Top16` (227) or `Top32` (287).
+
+The site shows the tightest descriptor it has, so these are **disjoint**: a deck it
+calls `Top8` is one it did not call 1st, 2nd, 3rd or Top4, which means it lost in the
+quarter-finals and finished 5th to 8th. `TopK` is places `K // 2 + 1` through `K`.
+
+The code read a bracket as nothing but "no worse than K", which is true and useless.
+With only an upper end, a deck can be placed *inside* a cut and never *outside* one:
+
+| top-8 cut | in | out | cannot tell |
+|---|---|---|---|
+| upper end only | 328 | **0** | 514 |
+| bracket as a range | 328 | 514 | **0** |
+
+Zero exclusions is why `vacuous_events` - the measure built to catch a cut that
+separates nothing - reported **20 of 20 events for every cut**. The page duly printed
+"at 20 of 20 events this cut excludes nothing, so the comparison is weaker than it
+looks" above a chart that was in fact fine, which is the worst way to be wrong: a
+correct chart under a warning telling the reader to discount it.
+
+`standing_best` carries the other end now. Both ends decide: inside if the worst end
+clears the cut, outside if the best end does not, and unknown only when the bracket
+straddles the line. On the real report:
+
+| cut | in cut | cannot tell | excludes nothing at |
+|---|---|---|---|
+| Event wins | 18 (unchanged) | 422 → 0 | 2/20 → 0/20 |
+| Top 10% | 119 (unchanged) | 356 → 68 | 20/20 → 5/20 |
+| Top 8 | 134 (unchanged) | 341 → 0 | 20/20 → 3/20 |
+| Top 25% | 268 (unchanged) | 207 → 167 | 20/20 → **17/20** |
+
+The counts that feed the shares did not move, so the rankings were right all along -
+only the two fields that tell a reader how much to trust them were wrong. And Top 25%
+now shows its real colour: it excludes nothing at 17 of 20 events, which is exactly
+what that measure exists to say.
+
+One consequence worth noting: a cut on a bracket boundary (top 8) places every deck,
+while a percentage cut slices across brackets and leaves some unplaceable. On this
+source top 8 is the better-determined cut even though a percentage is the more
+principled measure.
+
+### Unjudged is not failed
+
+`conversion` divided by all of a group's decks, so a deck the cut could not place
+counted against it. Which archetypes have decks sitting on a bracket boundary is an
+artefact of how the source labels results, so that was penalising archetypes for the
+labelling. The denominator is now the decks the cut could judge, with the unjudged
+count published beside it.
+
+### And two things in the checks themselves
+
+**A tolerance copied from a smaller table.** `check_report.py` allowed archetype
+shares of a cut to sum to 100% ±1 point. Every share is deliberately rounded to a
+tenth so the numbers a reader adds up are the numbers on screen - which means a sum
+over 72 contributing archetypes can drift 3.6 points with nothing wrong. The real
+report was reported as broken three times over. `_rounding_drift(rows)` scales the
+tolerance now, and the exact check that matters - deck counts - was passing all along.
+
+**A prose assertion that broke on a line wrap.** Text in the page lives in template
+literals and keeps their indentation, so a regex for a phrase that happens to wrap
+matched nothing. `prose()` collapses whitespace before any assertion on a sentence -
+a test failing for a reason unrelated to the page is the worst kind.
+
+---
+
+## 16. Bundling belongs to the build
+
+The single file was a second command, and the argument for folding it in was not the
+keystroke. The two-step version let `report.html` go **quietly stale**: rebuild the
+data, forget the bundle, open the file - it renders perfectly and shows the previous
+window. The embedded build stamp is the only clue, and it only helps someone who
+thinks to look, which is exactly the class of failure this project keeps closing.
+
+For the default source it was never optional anyway: an inkdecks report may not be
+published, so the local file is the only way to read it.
+
+The logic moved from `tools/` into `lorcana_meta/bundle.py`, because `tools/` is not on
+the import path of an installed package - the first attempt at calling it from the CLI
+died on `ModuleNotFoundError`. It is not a side utility; it is the product's only
+private output. `tools/bundle_report.py` stays as a thin entry point for re-bundling
+without refetching, and `--no-bundle` covers serving `site/` directly.
+
+Bundling still needs `site/` from a checkout, which a wheel does not carry. A build
+without it warns and writes the data rather than failing.
+
+---
+
+## 17. The win rate was measuring the wrong thing, and saying otherwise
+
+inkdecks publishes a matchup matrix at `/meta/winrate/`, and looking at it to decide
+whether to import it turned up a defect in this report instead.
+
+Their matrix over **our own window**, grouped by ink pair, against our `record.win_rate`
+for the same pairs:
+
+| pair | ours | theirs (every match) | gap |
+|---|---|---|---|
+| Amber / Amethyst | 60.1% | 55% (1299 matches) | +5.1 pp |
+| Amethyst / Steel | 61.2% | 46% (317) | +15.2 pp |
+| Sapphire / Steel | 55.6% | 36% (200) | **+19.6 pp** |
+
+**Higher in every pair without exception, by 11 points on average.** Our figures span
+55.5%-63.8%, a range of 8 points; theirs span 25%-59%, a range of 34.
+
+The cause is not a bug in the arithmetic - it is the sample. Every deck in this report
+finished inside `--top 32`, and a list that made the top 32 won most of its matches by
+definition. So the metric is "win rate among decks that already placed", which is
+informative in relative terms and nothing like what the label "Match win rate"
+promised. A reader looking at Sapphire/Steel saw 55.6% for a deck that wins 36% of its
+games.
+
+Worse, the previous session had *promoted* this number from a tooltip to a column and
+called it "the sturdiest number available here" - true about its game count, wrong
+about what it counts, and the 8-point spread means it barely separates decks anyway.
+
+The fix is labelling, not arithmetic: `winRateLabel()` names the sample and
+`winRateNote()` travels with it onto the results chart and the About page. The number
+stays, because relative comparison between archetypes in the same sample is still
+worth something.
+
+The general lesson, which is the reason this section exists: a metric can be
+arithmetically perfect, fully tested and reconciled by every check in
+`check_report.py`, and still answer a different question from the one its label asks.
+No amount of internal consistency catches that. It took an outside measurement of the
+same field.
+
+---
+
+## 18. Archetype-versus-archetype: measured, and not possible
+
+The most useful thing this report could hold is "the field is mostly these archetypes,
+so play the one with the best win rate against them". inkdecks publishes a matchup
+matrix and it can be grouped by archetype, so the question was whether to import it.
+
+Measured on the largest sample that exists - the whole current set, all time, 13,072
+matches:
+
+| | cells | median matches | median published interval | >= 100 matches |
+|---|---|---|---|---|
+| archetype vs the field | 38 | 82 | 22 pp | 47% |
+| **archetype vs archetype** | **884** | **3** | **84 pp** | **2%** |
+
+Two cells of 884 hold 400 matches or more. A median interval of 84 points means a
+typical cell says "somewhere between 10% and 94%".
+
+What "properly" would cost: 38 archetypes make **703 distinct matchups**. At 400
+matches each - enough to separate 55% from 45% - that is 281,200 matches. At a loose
+100 each, 70,300. The page holds 11,920. Short by six times for the loose version and
+twenty-four for a usable one, and that assumes a static metagame; in practice the data
+would also have to fit inside a window short enough that the meta had not moved.
+
+Two further blockers that survive any amount of data:
+
+* **Their archetypes cannot be joined to ours.** Theirs are player-supplied names -
+  `songs` and `song` as separate rows, `midrange` three times - and ours are clusters
+  of card overlap named after signature cards. There is no key.
+* **We can never compute it ourselves.** Decklists carry an aggregate W/L/D record and
+  never who the opponent was. No pairing data, no matchup, at any grain.
+
+So it is not built, and this is the measurement rather than an opinion.
+
+The question behind it is a good one and the report answers the answerable form of it.
+"Which deck beats this field" does not need 703 cells: the results axis (§14) measures
+it directly, pooling all of an archetype's finishes, on our own clustering and our own
+window - "22.7% of the top finishes on 11.3% of the field". What is genuinely missing
+is the conditional part, "good against **these** decks", and that is exactly the part
+the data cannot support.
+
+An ink-pair matrix was also considered and rejected: over our window its cells ran to
+a median of 10 matches and 58-point intervals, and averaging a card - or a win rate -
+across an ink pair is the mush §3 and §13 exist to avoid.
+
+---
+
+## 19. Ranking the results axis on a rate, with its interval
+
+Looking at inkdecks' matrix decided not to import it (§18) and changed what this
+report ranks on instead, which turned out to be the more valuable outcome.
+
+### The chart was ranked on the wrong number
+
+"What is winning" sorted archetypes by their share of the top finishes. On the real
+475-deck field that made the first bar **Grandmother Willow + Dumbo at 21.8%** - the
+largest archetype, 108 decks, and one taking *less* of the top finishes than its share
+of the field. The heading said "what is winning" and the leader was the deck that was
+merely most played, which is the exact failure the results axis was built to fix. The
+lift column beside it said -0.9, but bar length carries the value in this project's
+charts, and the bar said "biggest".
+
+Two independent reasons to rank on the conversion rate instead:
+
+* Against inkdecks' win rate over the same window and the same pairs, Spearman
+  correlation was **+0.79 for conversion, +0.66 for our own win rate, +0.56 for the
+  lift**. n=11, so the ordering of those three is suggestive rather than settled.
+* Lift barely varies. Across 23 archetypes it runs -1.7 to +3.6 points; the "Best
+  converter" tile was showing `+3.6 pp`, a number indistinguishable from noise. On the
+  8-archetype sample field it reached +11.4, which is why it looked fine in
+  development. A hypothesis that lift systematically flattered small archetypes was
+  checked and is false - size-to-lift correlation is -0.14.
+
+Ranked on conversion, the same field reads: Darkwing Duck + Launchpad 55.6%, Taran +
+Under the Sea 41.2%, David + Pocahontas 39.1%, and Grandmother Willow fifth at 28.6%.
+
+### A rate without its interval is the same mistake again
+
+Conversion on its own would have swapped one misleading leader for another: one
+archetype held **three lists and converted all three**, which sorts to the top of
+anything ranked on rate. So two guards, and both are needed:
+
+* `MIN_RATE_DECKS` (8, the movement floor, deliberately the same number) keeps the
+  thinnest rates off the chart, and what it excludes is counted with the share of the
+  field the rest covers.
+* every charted rate publishes a **Wilson 95% interval**. 40% from 25 lists is 23-59%;
+  37.5% from 8 lists is 14-69%. Wilson rather than the normal interval because these
+  samples are small and often at 0% or 100%, where the normal interval runs past the
+  ends. The chart tells the reader to treat two archetypes as different only when the
+  intervals miss each other.
+
+`conversion` also divides by the lists the cut could **place**, not by all of them: a
+knockout bracket straddling the cut is missing information, not a bad finish, and
+charging it as one penalises whichever archetypes happen to sit on a bracket boundary.
+
+### The guard that a real report needed
+
+Rendering the user's existing report against the new chart produced **"Best converter
+100.0% — Lantern + Demona, 3 of – lists"**. With `judged` absent from an older payload
+the floor read as zero and let the three-list archetype through - the precise output
+the floor exists to prevent, on the first report it met. `withDefaults` now marks such
+a report `rankable: false` and the chart withholds itself with the reason. A default
+that silently reads as "no floor" is worse than no default.
+
+### And the order itself was a claim the data could not back
+
+The first real report built on the new axis showed 14 archetypes in a neat descending
+list, with a 9-list archetype at 44.4% sitting above a 141-list one at 41.1%. Checking
+every interval against the leader's lower bound: **all 13 others overlapped it, and
+none was measurably worse.** The order was an artefact of point estimates on a few
+dozen lists each.
+
+Sorting by the interval's lower bound would fix the order and break the chart - bar
+length carries the value here, so a chart ordered by one number and drawn by another
+looks wrong. Making the bar carry the lower bound would headline "at least 33.7%" for
+a deck converting 45.8%, which is honest and much harder to read.
+
+So the chart keeps the rate and disowns its own order in words: "the order here is not
+a ranking… read it as a shortlist, not a league table." Where a real gap exists it
+counts how many archetypes are clearly behind instead. The comparison that matters is
+`other.high >= leader.low`, and the mutation using the wrong end survived every test
+built on identical or disjoint intervals - only a partial overlap distinguishes them.
+
+`liftText` lost its last caller in the same pass and was deleted. The rule about
+nothing shipping that nothing reads applies to the page as much as to the payload.
+
+---
+
+## 20. The caveats had eaten the charts
+
+Each of the last several passes added a sentence to a chart subtitle, and each was
+earned: what the cut covers, why the interval is there, which events it fails to
+separate, why some decks cannot be judged, what the win rate's sample is, what the
+order does and does not claim. Measured together, the results chart's subtitle was
+**331 words** and the overview carried **637 words** of subtitle prose above five
+charts.
+
+That is not a tidiness complaint. When everything is qualified at the same weight, the
+qualifications that change how you read the chart are indistinguishable from the ones
+that do not, and the reader skips all of them. The project spent this whole session
+making numbers honest; a wall of text in front of them undoes that.
+
+`barChart` gained a `notes` option, rendered as a disclosure titled "How to read this,
+and what it leaves out". Subtitles dropped to 166 words across the overview and 507
+words moved behind the disclosures - **nothing deleted**, which matters, because the
+tempting way to shorten a wall of text is to delete it and every one of those
+sentences is load-bearing. `test_render.mjs` caps each subtitle at 120 words and
+separately checks that each note is still reachable.
+
+Two details worth keeping:
+
+* the check is **per chart**, not per page. A first version asserted a phrase appeared
+  somewhere in the HTML, and passed when the ink chart lost its movement note because
+  the pair chart still carried the same sentence.
+* the print stylesheet forces every disclosure open and hides the summary. Paper cannot
+  be clicked, and a caveat that only exists behind a toggle is worse on paper than one
+  in the subtitle.
+
+### A flag that looked like it did something
+
+`--format` defaulted to "Core Constructed" and was then overridden by
+`getattr(source, "fmt", ...)` for any source naming its own format - which the
+default source does. Passing it with inkdecks changed nothing and said nothing. It now
+defaults to `None`, so the CLI can tell "the user said nothing" from "the user asked
+for this", and warns when it is ignored.
+
+That default immediately produced a second bug: a `None` reaching `LocalSource`
+intact became the literal string "None" as a format name on any deck file without a
+`format` key - the sample data all carries one, so nothing caught it. Coerced at the
+source now, with a test over `None`, `""` and a real value.
+
+---
+
+## 21. Things deliberately not done
 
 - **No scraping of any site whose terms forbid it without permission.** Ask, or copy
   by hand.
@@ -568,6 +972,15 @@ extra specificity, so the ordinary rules that followed it were quietly winning.
 - **No publish workflow.** See §11.
 - **No card tables for one-off brews.** See §9. They keep everything that identifies
   them; they lose statistics that a single deck cannot support.
+- **No weighting by event size.** `tournament_players` is available and a multiplier
+  like "a win at 300 players is worth five at 12" would be invented. The result cuts
+  expose event size instead (§14) and leave the judgement to the reader.
+- **No matchup table.** Archetype versus archetype needs roughly twenty-four times
+  the data that exists, and their archetype labels cannot be joined to our clusters
+  (§18). We hold no pairing data of our own at all.
+- **No separating the deck from the pilot.** An archetype can be over-represented in
+  the top finishes because strong players chose it, and nothing in this data can tell
+  the difference. The About page says so rather than the report implying otherwise.
 - **No npm, and no test framework.** `test_render.mjs` is plain node calling plain
   functions (§12). A dependency that has to be installed before a test runs is a
   dependency that stops the test being run.

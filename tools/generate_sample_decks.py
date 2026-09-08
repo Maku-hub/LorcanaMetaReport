@@ -177,6 +177,20 @@ def main() -> int:
     today = date.today()
     pools: dict[tuple, dict] = {}
 
+    # One placing per deck per event, handed out without replacement. Drawing them at
+    # random let three decks share 1st place in the same tournament, which makes
+    # "event wins" and any top-N cut meaningless - and a report tested against
+    # impossible data proves nothing about a real field.
+    available: dict[str, list[int]] = {}
+
+    def take_standing(event: str, top_cut: int) -> int | None:
+        places = available.setdefault(
+            event, list(range(1, min(32, top_cut * 4) + 1))
+        )
+        if not places:
+            return None
+        return places.pop(rng.randrange(len(places)))
+
     decks = []
     for inks, leans, wanted, names in FIELD:
         if not set(inks) <= set(INKS):
@@ -186,7 +200,9 @@ def main() -> int:
 
         for _ in range(wanted):
             event, players, top_cut = rng.choice(EVENTS)
-            standing = rng.randint(1, min(32, top_cut * 4))
+            standing = take_standing(event, top_cut)
+            if standing is None:  # that event's placings are all handed out
+                continue
             wins = max(0, 7 - (standing // 5) - rng.randint(0, 1))
             decks.append(
                 {

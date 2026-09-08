@@ -47,22 +47,30 @@ def fixture(name: str) -> str:
 # ------------------------------------------------------------------ placings
 
 def test_parse_standing():
-    for text, expected in (
-        ("1st", 1),
-        ("2nd", 2),
-        ("3rd", 3),
-        ("20th", 20),
-        ("Top8", 8),
-        ("Top16", 16),
-        ("Top32", 32),
-        ("top 4", 4),
+    for text, worst, exact, best in (
+        ("1st", 1, True, 1),
+        ("2nd", 2, True, 2),
+        ("3rd", 3, True, 3),
+        ("20th", 20, True, 20),
+        # Knockout brackets are disjoint: the site names 1st, 2nd and 3rd where it
+        # knows them, so a deck shown as "Top8" went out in the quarter-finals.
+        ("Top8", 8, False, 5),
+        ("Top16", 16, False, 9),
+        ("Top32", 32, False, 17),
+        ("top 4", 4, False, 3),
+        ("7", 7, True, 7),
     ):
-        number, label = parse_standing(text)
-        check(number == expected, f"{text!r} -> {expected}, got {number}")
+        number, label, is_exact, is_best = parse_standing(text)
+        check(number == worst, f"{text!r} -> worst {worst}, got {number}")
         check(label == text.strip(), f"{text!r} keeps its label, got {label!r}")
+        check(is_exact is exact, f"{text!r} exact={exact}, got {is_exact}")
+        check(is_best == best, f"{text!r} -> best {best}, got {is_best}")
 
-    check(parse_standing("") == (None, ""), "empty stays empty")
-    check(parse_standing("Swiss") == (None, "Swiss"), "an unparseable label is kept as-is")
+    check(parse_standing("") == (None, "", None, None), "empty stays empty")
+    check(
+        parse_standing("Swiss") == (None, "Swiss", None, None),
+        "an unparseable label is kept as-is and claims no precision",
+    )
 
 
 def test_bucket_becomes_its_upper_bound():
