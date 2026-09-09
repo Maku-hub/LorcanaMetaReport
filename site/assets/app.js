@@ -1885,8 +1885,8 @@ function withDefaults(meta) {
   }
   // A report from between the two - it has cuts, but its rates carry no denominator
   // and no interval. Ranking on those is worse than not ranking: with `judged`
-  // missing the deck floor reads as zero, and a three-list archetype that converted
-  // all three tops a chart titled "what is winning". Found exactly that way.
+  // missing, the deck floor reads as zero, and a three-list archetype that converted
+  // all three tops a chart titled "what is winning".
   meta.results.rankable = meta.results.cuts.some((cut) =>
     (meta.pairs || []).some((pair) =>
       (pair.variants || []).some(

@@ -116,8 +116,8 @@ def _check_threats(report: dict, totals: dict) -> list[str]:
         named = sum(group["decks"] for group in threat["archetypes"])
         shown = len(threat["archetypes"])
         # A short list is either the cap or a lost contributor, and the two look the
-        # same from the counts alone - a first version of this check could not tell
-        # them apart and let a dropped group through.
+        # same from the counts alone unless the expected length is checked, so a
+        # dropped group would pass as a capped one.
         expected = min(threat["contributor_count"], CONTRIBUTORS_SHOWN)
         if shown != expected:
             problems.append(

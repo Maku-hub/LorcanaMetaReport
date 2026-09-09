@@ -1,11 +1,11 @@
 /* Tests that every page actually renders, and says what it is meant to say.
  *
- * `site/assets/app.js` is 1300 lines and had no test at all. Every page bug found
- * while building it was found by hand: a brew rendering an empty "Curve and card
- * types" card, "A one-off lists" for two decks, an archetype chart whose bars stopped
- * at 74% of the field without saying so, and a report missing the movement block
- * throwing during render and leaving a blank page. A blank page is the worst failure
- * this project has, because it carries no clue at all.
+ * `site/assets/app.js` is the report's whole readable surface, and every page bug in
+ * it was once found by opening the page and looking: a brew rendering an empty
+ * "Curve and card types" card, "A one-off lists" for two decks, an archetype chart
+ * whose bars stopped at 74% of the field without saying so, and a missing movement
+ * block throwing during render and leaving a blank page. A blank page is the worst
+ * failure this project has, because it carries no clue at all.
  *
  * Run it like the Python suites - no npm, no packages, no network:
  *
@@ -83,9 +83,8 @@ function render(meta, route) {
 /**
  * The table twin behind chart `id`: its column headers and its first data row.
  *
- * The row matters as much as the header. A first attempt at this test checked only
- * that a "Movement" header existed, and a mutation that emptied every cell under it
- * passed - a column of blanks is exactly the silent failure being guarded against.
+ * The row matters as much as the header: a column of blanks is exactly the silent
+ * failure being guarded against, and a header-only check cannot see it.
  */
 function tableTwin(meta, id) {
   app.state.meta = meta;
@@ -501,8 +500,8 @@ function test_the_threat_board_can_rank_by_what_the_field_is_picking_up() {
   app.state.meta = meta;
   app.state.threatSort = "expected";
   const byExpected = render(meta, "threats");
-  // The word also appears in the legend below the table, so assert the header cell:
-  // a first version of this check passed with the column deleted.
+  // The word also appears in the legend below the table, so assert the header cell -
+  // a page-wide match passes with the column deleted.
   check(
     /<th[^>]*>Movement<\/th>/.test(byExpected),
     "the Movement column header is in the table"
@@ -540,8 +539,8 @@ function test_the_card_inspector_shows_where_the_card_sits_in_the_meta() {
   const threat = meta.threats[0];
   app.state.meta = meta;
 
-  // Through showCard, not cardPosition: a first version tested the lookup directly
-  // and passed with the inspector never rendering what the lookup returned.
+  // Through showCard, not cardPosition: testing the lookup directly passes even when
+  // the inspector renders none of what the lookup returned.
   const body = app.inspectCard(threat.name);
   check(body !== null, "the inspector rendered something");
   check(/Chance you meet it/.test(body || ""), `field presence is shown: ${body}`);
@@ -1083,11 +1082,11 @@ function test_no_subtitle_is_a_wall_of_text() {
  *
  * The tempting way to shorten a wall of text is to delete it, and each of these
  * sentences is load-bearing - so each is checked for. Forced rather than looked for:
- * most of them only appear when something is true of the field, and a first version
- * of this test asserted them against whatever the last build happened to contain. It
- * passed on a real inkdecks report, where brews, vacuous cuts and unjudgeable
- * bracket labels all exist, and failed on the sample field, where none of them do -
- * which is the trap this file's own header warns about.
+ * most of them only appear when something is true of the field - brews, a cut that
+ * separates nothing, unjudgeable bracket labels - and a real report has all three
+ * while the sample field has none. Asserting against whatever the last build produced
+ * passes on one and fails on the other, which is the trap this file's header warns
+ * about.
  */
 function test_every_caveat_is_reachable_when_it_applies() {
   // Conditions the sample field does not produce: a brew, a cut that separates
