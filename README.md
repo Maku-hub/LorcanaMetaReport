@@ -8,12 +8,21 @@ is playing, what is winning, and what to prepare for.
   <tr>
     <td align="center"><img src="images/archetypes.png" width="280" alt="archetypes.png"></td>
     <td align="center"><img src="images/winning.png" width="280" alt="winning.png"></td>
-    <td align="center"><img src="images/what_yll_face.png" width="280" alt="what_yll_face.png"></td>
   </tr>
   <tr>
     <td align="center"><sub>archetypes.png</sub></td>
     <td align="center"><sub>winning.png</sub></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td align="center"><img src="images/what_yll_face.png" width="280" alt="what_yll_face.png"></td>
+    <td align="center"><img src="images/pair.png" width="280" alt="pair.png"></td>
+  </tr>
+  <tr>
     <td align="center"><sub>what_yll_face.png</sub></td>
+    <td align="center"><sub>pair.png</sub></td>
   </tr>
 </table>
 
