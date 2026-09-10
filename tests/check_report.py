@@ -315,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     problems = []
 
     # The gate that makes a private-use licence stick. Nothing in this repo publishes
-    # any more (docs/DECISIONS.md section 11), so this is the check anything added
+    # any more - there is no publish workflow - so this is the check anything added
     # later would have to be told to ignore before inkdecks data could go live.
     source = report.get("source", {})
     if not source.get("publishable", True):

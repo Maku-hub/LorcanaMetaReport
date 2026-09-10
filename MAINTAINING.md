@@ -1,7 +1,7 @@
 # Maintaining this project
 
-Commands, the rules that must not be broken, and the platform traps that already cost
-time. The *why* behind each rule is in [`DECISIONS.md`](DECISIONS.md).
+Commands, the rules that must not be broken, the platform traps that already cost
+time, and the additions that were measured and rejected.
 
 ## Commands
 
@@ -130,3 +130,42 @@ palette and always ship with a 3-letter code or name. Every chart has a table tw
 **A new source is one file** in `src/lorcana_meta/sources/`: implement
 `fetch(start, end) -> list[Deck]`, expose `name` / `attribution` / `attribution_url` /
 `publishable`, register it in `sources/__init__.py`.
+
+## Measured and rejected
+
+Each of these was looked at properly and turned down. The measurements are here so the
+question does not have to be re-opened from scratch.
+
+**No matchup table.** Archetype versus archetype needs roughly twenty-four times the
+data that exists. On the largest sample available — a whole set, all time, 13,072
+matches — the 884 matchup cells had a median of **3 matches** and a median published
+interval of **84 points**. 703 distinct matchups at 400 matches each would need
+281,200. inkdecks' own archetype labels are name-based (`songs` and `song` as separate
+rows, `midrange` three times) so they cannot be joined to card-overlap clusters, and we
+hold no pairing data of our own at any grain.
+
+**No card prices.** Cardmarket's terms prohibit automated collection and their official
+API needs registered credentials; scraping it would be exactly the widening the
+curl_cffi rule forbids. lorcana-api.com carries no prices. A deck price is also not a
+sum of trend prices — multiple printings, languages and conditions per card.
+
+**No importing inkdecks' win rates.** It would put a second win rate, at a coarser
+grain, from a different source, beside ours — two definitions of one name. Its
+diagnostic value is already banked: it is what showed ours runs high.
+
+**No separating deck from pilot.** An archetype can be over-represented because strong
+players chose it, and nothing here can tell the difference. The About page says so.
+
+**No weighting by event size.** `tournament_players` exists, but a multiplier like "a
+win at 300 players is worth five at 12" would be invented. Event size is shown; the
+judgement is the reader's.
+
+**No month-over-month comparison.** Movement is one window split in two.
+
+**No npm, no test framework.** A dependency that must be installed before a test runs
+is a dependency that stops the test being run.
+
+**No publish workflow.** One existed — manual-dispatch, `local` data only, running
+`check_report.py` before deploying — and was deleted. It was the only thing here that
+could make anything public, in a project whose point is a report that is not.
+`git log -- .github/workflows/publish.yml` has it.

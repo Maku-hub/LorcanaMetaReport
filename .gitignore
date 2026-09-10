@@ -22,7 +22,7 @@ venv/
 # to commit without thinking - and once it is in history, making this repo public
 # later republishes it retroactively. Git history is hard to scrub.
 #
-# Regenerate in seconds:  .\scriptsuild.ps1 -Sample
+# Regenerate in seconds:  python tools/generate_sample_decks.py
 site/data/meta.json
 
 # The synthetic sample field. Generated, and its dates are relative to "today", so it
@@ -30,9 +30,5 @@ site/data/meta.json
 # `git status`. Nothing depends on a committed copy: CI regenerates it, and so does
 # the documented first command.
 #
-# Regenerate:  .\scriptsuild.ps1 -Sample     (or python tools/generate_sample_decks.py)
+# Regenerate:  python tools/generate_sample_decks.py
 data/decks/sample-field.json
-
-# Local-only notes for editor/assistant tooling. The maintained copy is
-# docs/MAINTAINING.md; this file just points at it.
-CLAUDE.md

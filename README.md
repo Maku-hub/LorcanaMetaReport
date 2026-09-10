@@ -1,15 +1,21 @@
 # Lorcana Meta Report
 
-A private tournament-meta report for Disney Lorcana. Pull decklists for a date window,
+A tournament-meta report for Disney Lorcana. Pull decklists for a date window,
 group them by what is actually in them, and get one HTML file that says what the field
 is playing, what is winning, and what to prepare for.
 
-Built for one player getting ready for one tournament. Not a service, not published
-anywhere.
-
-```bash
-lorcana-meta build --last 30 --top 32     # -> site/data/meta.json + report.html
-```
+<table>
+  <tr>
+    <td align="center"><img src="images/archetypes.png" width="280" alt="archetypes.png"></td>
+    <td align="center"><img src="images/winning.png" width="280" alt="winning.png"></td>
+    <td align="center"><img src="images/what_yll_face.png" width="280" alt="what_yll_face.png"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>archetypes.png</sub></td>
+    <td align="center"><sub>winning.png</sub></td>
+    <td align="center"><sub>what_yll_face.png</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -24,29 +30,6 @@ lorcana-meta build --last 30 --top 32     # -> site/data/meta.json + report.html
 | **Archetype page** | Card inclusion with copy spreads, the cost curve, the cards that identify the deck, and its best finishes. |
 | **About** | How every number was made, and everything the report had to drop. |
 
-Four things it does differently, each because the obvious version was wrong. The
-reasoning is in [`docs/DECISIONS.md`](docs/DECISIONS.md).
-
-**Archetypes come from card overlap, not deck names.** One real archetype arrived as
-*Blurple*, *Brewing a Storm*, *Stormlight Archive*, *YP* and *Yeetple* — seven lists,
-six names, one deck. Grouping by ink pair is no better: 56 Amber/Amethyst decks turned
-out to be seven different archetypes. Lists are clustered on weighted card overlap and
-named after the cards that distinguish them; submitted names are shown, never used.
-
-**Copy counts are a mode and a spread, not a mean.** A card averaging 2.40 copies had
-28 of 43 lists on exactly 2. You get the number lists actually run, plus the full
-spread, plus the mean for reference.
-
-**What is played and what wins are separate charts.** On a real field the most played
-archetype held 19.4% of the field and 11.1% of the top-8 finishes. The results chart
-ranks on conversion — lists reaching the cut over lists the cut could place — with a
-95% interval on every rate, because 40% from 25 lists and 37.5% from 8 lists are not
-the same claim. When the intervals overlap, the chart says its order is not a ranking.
-
-**Anything dropped is counted and shown.** Unmatched card names, truncated lists,
-skipped decks, thin ink pairs, decks a result cut cannot place. A quietly smaller field
-is worse than a visible gap.
-
 ---
 
 ## Getting started
@@ -56,9 +39,6 @@ python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate  elsewhere
 pip install -e .
 ```
-
-The install is what puts `lorcana-meta` on PATH. There is no `PYTHONPATH=` prefix to
-remember — that is POSIX syntax and PowerShell reads it as a command name.
 
 ### Try it without touching anyone's server
 
@@ -80,12 +60,8 @@ stating you have it — see [Data sources](#data-sources).
 $env:INKDECKS_CONSENT = "1"                                              # this window
 [Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")   # and future ones
 
-lorcana-meta build --last 14 --top 32
+lorcana-meta build --last 14 --top 32 --min-players 32
 ```
-
-`inkdecks` is the default source. Set the variable at user level too if you plan to run
-this from a scheduled task, which inherits your user environment but not the shell you
-typed in.
 
 ### How long the first build takes
 
@@ -102,37 +78,6 @@ pages a minute**.
 are cached forever and a rebuild fetches only what is new. A long first build does not
 have to happen in one sitting: decks are fetched best-placed first, so Ctrl+C and the
 same command tomorrow resumes where it stopped, and a partial field says so.
-
-### Choosing a window
-
-| You want | Try |
-|---|---|
-| The current meta, enough decks to trust | `--last 30 --top 32` |
-| What is winning, not just what is played | `--last 45 --top 8` |
-| A quick look, few requests | `--last 7 --top 8` |
-| Only serious events | add `--min-players 32` |
-| A different format | add `--inkdecks-category infinity` (or `poorcana`, `all`) |
-
-Under about 60 decks the percentages move a lot, and the report says so rather than
-letting you read noise as a trend.
-
-### On a schedule
-
-Weekly is plenty — the meta does not move daily and it is kinder to the source. Use the
-absolute path to the venv rather than trusting `PATH` inside the scheduler, and set
-`INKDECKS_CONSENT` at user level so the task inherits it.
-
-```powershell
-$cmd = "cd C:\path\to\repo; .\.venv\Scripts\lorcana-meta.exe build --last 30 --top 32"
-$action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$cmd`""
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 07:00
-Register-ScheduledTask -TaskName LorcanaMetaReport -Action $action -Trigger $trigger `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable)
-```
-
-```cron
-0 7 * * 1  cd /path/to/repo && .venv/bin/lorcana-meta build --last 30 --top 32
-```
 
 ---
 
@@ -169,43 +114,6 @@ inkdecks only:
 local only: `--local-dir` (default `data/decks`) and `--format` (default
 `Core Constructed`, for decks that carry no format of their own).
 
-```bash
-lorcana-meta build --last 30 --top 32 --min-players 32
-lorcana-meta build --start 2026-08-01 --end 2026-08-27
-lorcana-meta build --last 60 --top 1 --cluster-threshold 0.75
-```
-
-Also here: `tools/bundle_report.py` (re-bundle without refetching),
-`tools/generate_sample_decks.py`, `tools/import_pasted_decks.py`, and
-`tests/check_report.py`. To preview the multi-file version, serve `site/` — a `file://`
-open will not work, because the page fetches `data/meta.json`:
-
-```bash
-cd site && python -m http.server 8000
-```
-
----
-
-## Where the report goes
-
-`report.html` carries the CSS, the JavaScript and the data inline. It opens from your
-filesystem, works offline and needs no account or server. **If the report is for you
-only, this is the right answer.** Card images still come from Ravensburger's CDN, so
-the inspector needs a connection; every number works without one.
-
-> [!WARNING]
-> **A GitHub Pages site is public even when the repository is private.** From the
-> [GitHub documentation](https://docs.github.com/en/enterprise-cloud@latest/pages/getting-started-with-github-pages/changing-the-visibility-of-your-github-pages-site):
-> *"GitHub Pages sites are publicly available on the internet by default, even if the
-> repository for the site is private or internal"*, and *"to publish a GitHub Pages
-> site privately, your organization must use GitHub Enterprise Cloud."* A personal
-> account cannot make a Pages site private at all — private repo, world-readable page,
-> guessable URL.
-
-There is no publish workflow in this repository, on purpose. One existed and was
-deleted; it is in the git history if a public page from redistributable decklists is
-ever actually wanted.
-
 ---
 
 ## Data sources
@@ -225,8 +133,7 @@ failing check first. If your own permission differs, changing that is a delibera
 edit, not a default to drift into.
 
 The crawl is one request at a time with an adaptive delay, deck pages cached forever,
-and a session that is read-only by construction. Details and measurements:
-[`docs/DECISIONS.md`](docs/DECISIONS.md).
+and a session that is read-only by construction.
 
 **Card data:** [lorcana-api.com](https://lorcana-api.com/) — free, no key. One bulk
 endpoint cached for 24 hours, supplying card text, cost, inks, type and images.
@@ -236,27 +143,6 @@ events no platform covers, and for lists copied by hand. Format:
 [`data/decks/README.md`](data/decks/README.md). `tools/import_pasted_decks.py` converts
 a file of pasted lists; reading a page and copying a list yourself is not automated
 access, and the tool fetches nothing.
-
----
-
-## Reading the numbers honestly
-
-Every one of these is stated on the report itself, next to the number it applies to.
-
-- **It is a sample, not a census** — only events on the source platform, and only
-  standings whose player submitted a list.
-- **The win rate is conditioned on the cut.** Every list in the report finished inside
-  `--top N`, so these are win rates among decks that already placed: uniformly high and
-  compressed. Read them against each other, never as how often a deck wins.
-- **Result cuts are conditional too** — which of the decks already doing well went
-  furthest, not a win rate against a whole tournament.
-- **A rate with few lists behind it is wide.** Every conversion rate ships its 95%
-  interval and its denominator; archetypes with fewer than 8 judged lists are not
-  charted at all.
-- **Movement is one window cut in half by date**, never a comparison with a previous
-  report. A fortnight has weather.
-- **Nothing separates the deck from the pilot.** An archetype can take more than its
-  share of top finishes because strong players chose it.
 
 ---
 
@@ -303,8 +189,7 @@ never runs in CI.
 | `site/` | The page: one HTML file, one stylesheet, one script, no build step. |
 | `src/lorcana_meta/` | `sources/` fetch decklists, `cards.py` resolves names, `cluster.py` finds archetypes, `analyze.py` does the maths, `bundle.py` writes the single file, `cli.py` wires it together. |
 | `.cache/` | Cached deck pages, the learned request rate, the card database. Safe to delete. |
-| `docs/DECISIONS.md` | Why it is built this way, and the traps already hit. |
-| `docs/MAINTAINING.md` | Commands, hard rules, platform gotchas. |
+| `MAINTAINING.md` | Commands, hard rules, platform traps, and the additions that were measured and rejected. |
 
 A new source is one file in `src/lorcana_meta/sources/`: implement
 `fetch(start, end) -> list[Deck]`, expose `name` / `attribution` / `attribution_url` /
