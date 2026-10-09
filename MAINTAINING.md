@@ -27,6 +27,10 @@ node tests\test_render.mjs
 .venv\Scripts\python.exe -m ruff check .
 ```
 
+ruff is the one tool not installed by `pip install -e .`. Pin it to what CI uses, or a
+newer release can fail the pipeline on code that linted clean here:
+`.venv\Scripts\python.exe -m pip install ruff==0.16.6`.
+
 No test dependencies and no network. `test_render.mjs` is the only one needing node and
 needs no npm packages. `test_inkdecks.py --live` hits the real site and needs
 `INKDECKS_CONSENT=1`; it never runs in CI.
@@ -46,8 +50,17 @@ written permission; nothing in the code may assert it for them.
 another project and do not widen it here. The session stays read-only by construction —
 `ReadOnlySession` allows `get` and raises on anything that could write.
 
-**A 429 is not a 403.** A rate limit means slow down. A 403 from this site means the
-client is refused. Never answer a 429 by switching transport.
+**A 429, a 403 and a challenge are three different answers.** A rate limit means slow
+down. A 403 means the client is refused. A Cloudflare challenge (`cf-mitigated:
+challenge`) means a browser is wanted, and no delay changes that — so it is never
+retried. It is answered once, by a browser, and the cookie carries the run; see
+`sources/clearance.py`. Never answer a 429 by switching transport.
+
+**The browser clears the gate, it does not do the crawling.** One page, then
+`curl_cffi` again at the usual pace through the usual cache and the read-only wrapper.
+A design where the browser fetches every deck page would discard all three. If a run
+ever needs more than `MAX_CLEARANCES` browsers, the cookie is not being honoured and
+the answer is to stop, not to open more.
 
 **Archetypes come from card overlap, never deck names.** Names are collected for
 display only.
@@ -152,6 +165,19 @@ sum of trend prices — multiple printings, languages and conditions per card.
 **No importing inkdecks' win rates.** It would put a second win rate, at a coarser
 grain, from a different source, beside ours — two definitions of one name. Its
 diagnostic value is already banked: it is what showed ours runs high.
+
+**No headless browser for the challenge.** Measured 2026-10-09: headless Chrome sat on
+the interstitial for the full 30s timeout and never cleared it. The visible window is
+not a stylistic choice.
+
+**No cloudscraper.** Tried twice, for two different blocks. It handles the JavaScript
+challenge but speaks Python's TLS, so it presents the fingerprint the site refuses —
+403 both times, identical to plain `requests`. A slower way to fail.
+
+**No hand-copied clearance cookie.** It works, but only from the browser, address and
+User-Agent that earned it, and it expires inside the hour. A cookie minted in
+mobile-emulated Chrome was refused over every impersonation profile. Minting it in
+code removes the footgun and the manual step both.
 
 **No separating deck from pilot.** An archetype can be over-represented because strong
 players chose it, and nothing here can tell the difference. The About page says so.

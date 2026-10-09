@@ -96,6 +96,22 @@ an agreement. It is not a pattern to copy into another project.
 It changes the handshake, not the crawl: same two paths, same one-at-a-time pacing,
 same cache, same read-only wrapper.
 
+## A challenge is a third case, and it is not retried
+
+A 429 means "slower", a 403 means "not this client", and a Cloudflare challenge
+means "not without a browser". The first two are worth waiting out; the third is
+not: no delay clears an interstitial, so retrying it three times per deck across a
+whole field is a few hundred pointless requests aimed at a site that has just said
+no.
+
+So a challenge is answered once, by the only thing that can answer it - a real
+browser, opened for a single page. See ``clearance.py`` for what it does and what
+it deliberately does not. The cookie it earns is then carried by the ordinary
+client for the rest of the run, which means the pacing, the cache, the two path
+shapes and the read-only wrapper all still hold for every request that matters.
+Without a browser available, or with ``--inkdecks-no-browser``, it reports the
+``CF-RAY`` id and stops.
+
 """
 
 from __future__ import annotations
@@ -110,6 +126,7 @@ from datetime import date
 from pathlib import Path
 
 from ..models import INKS, Deck, DeckCard
+from . import clearance as clearance_store
 from .base import SourceError
 
 log = logging.getLogger(__name__)
@@ -158,12 +175,43 @@ NARROW_BY = 0.9
 MAX_BACKOFF = 60.0
 #: Decks refused in a row before treating it as the site rather than one bad page.
 MAX_CONSECUTIVE_FAILURES = 8
+#: Challenges cleared in a row *without a single request succeeding in between*.
+#:
+#: Deliberately not a per-run total. The cookie outlives about twenty minutes, so a
+#: 1.5-hour field legitimately refreshes it four or five times, and a run-long cap
+#: would kill the long builds this tool exists for. What is never legitimate is
+#: minting a cookie that buys nothing: that shows up as clearances with no success
+#: between them, and the counter resets on every page that works.
+MAX_CLEARANCES = 3
 #: A lock older than this is treated as abandoned - a killed build leaves one behind.
 LOCK_STALE_AFTER = 120.0
 LIST_CACHE_TTL = 3600  # list pages change as events are added; deck pages never do
 #: Which browser curl_cffi presents itself as. Pinned so a library update cannot
 #: silently change what the site sees. First place to look if requests start failing.
 IMPERSONATE = "chrome"
+
+
+class ChallengeError(SourceError):
+    """The site answered with an interactive challenge rather than a page.
+
+    Separate from a plain refusal because the response is different in kind: the
+    request was not denied, it was deferred to a browser. Nothing this tool can do
+    to the next request changes that, so callers stop instead of retrying.
+    """
+
+
+def _is_challenge(response) -> bool:
+    """Tell a Cloudflare interstitial apart from an ordinary refusal.
+
+    Cloudflare labels its own interventions in ``cf-mitigated``, and ``challenge``
+    is the authoritative signal. The body check is only a fallback for responses
+    that arrive without the header.
+    """
+    if (response.headers.get("cf-mitigated") or "").strip().lower() == "challenge":
+        return True
+    body = (getattr(response, "text", "") or "")[:4000].lower()
+    return "challenge-platform" in body or ("just a moment" in body and "cf_chl" in body)
+
 
 _ORDINAL = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
 _BUCKET = re.compile(r"^top\s*(\d+)$", re.IGNORECASE)
@@ -325,6 +373,7 @@ class InkdecksSource:
         min_players: int | None = None,
         user_agent: str | None = None,
         timeout: int = 45,
+        use_browser: bool = True,
     ) -> None:
         if not (consent or os.environ.get("INKDECKS_CONSENT")):
             raise SourceError(
@@ -360,6 +409,11 @@ class InkdecksSource:
         self.max_decks = max_decks
         self.min_players = min_players
         self.timeout = timeout
+        #: Whether a Cloudflare challenge may be answered by opening a browser.
+        self.use_browser = use_browser
+        self._clearances = 0
+        #: A cookie the last run earned, if it is still inside the passage window.
+        self._clearance = clearance_store.load(self._clearance_path())
         self._last_request = 0.0
         self._session = _session(
             {
@@ -370,6 +424,21 @@ class InkdecksSource:
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
+        if self._clearance:
+            self._wear(self._clearance)
+
+    def _clearance_path(self) -> Path:
+        return self.cache_dir / "clearance.json"
+
+    def _wear(self, clearance) -> None:
+        """Present the identity the cookie was issued to.
+
+        Cloudflare honours a cf_clearance only for the User-Agent that earned it, so
+        this overrides whatever was configured. A UA set to identify the tool is the
+        better arrangement, but it is not one the cookie survives.
+        """
+        self._clearance = clearance
+        self._session.headers.update({"User-Agent": clearance.user_agent})
 
     # -- fetching --------------------------------------------------------------
 
@@ -423,6 +492,14 @@ class InkdecksSource:
         for position, stub in enumerate(stubs, start=1):
             try:
                 cards = self._fetch_decklist(stub)
+            except ChallengeError as error:
+                # Not one bad page: if this path wants a browser, every remaining deck
+                # wants one too. Stopping here costs a single request instead of the
+                # twenty-four it would take to exhaust the consecutive-failure budget.
+                raise ChallengeError(
+                    f"{error}\n  {len(decks)} of {len(stubs)} decklists were read and "
+                    "cached before this."
+                ) from error
             except SourceError as error:
                 # One stubborn page must not cost the whole run. Losing 1 decklist of
                 # 369 barely moves a percentage; losing the run costs an hour and
@@ -447,11 +524,13 @@ class InkdecksSource:
                 continue
 
             consecutive_failures = 0
+            # Every deck, not every twenty-fifth. At 3-9s a page a long run spends
+            # minutes between milestones, which is indistinguishable from a hang.
+            # Logged before the empty-list check so the count never stalls either.
+            log.info("inkdecks: %d/%d decklists read", position, len(stubs))
             if not cards:
                 continue
             decks.append(self._to_deck(stub, cards))
-            if position % 25 == 0 or position == len(stubs):
-                log.info("inkdecks: %d/%d decklists read", position, len(stubs))
 
         read = getattr(self._session, "bytes_read", 0)
         if read:
@@ -584,10 +663,14 @@ class InkdecksSource:
 
         for attempt in range(3):
             self._wait()
-            response = self._session.get(url, params=params, timeout=self.timeout)
+            response = self._session.get(
+                url, params=params, timeout=self.timeout, cookies=self._cookies()
+            )
             # Their rate limiting is counted per session, so carrying the site's own
             # PHPSESSID across requests gets the next one refused. Browse statelessly,
-            # which is what a plain HTTP client does anyway.
+            # which is what a plain HTTP client does anyway. The clearance cookie is
+            # passed per request rather than kept in the jar, so this stays a blanket
+            # wipe and the one cookie that must survive is never at its mercy.
             self._session.cookies.clear()
 
             # 429 and 403 still mean different things, even with one client.
@@ -609,6 +692,17 @@ class InkdecksSource:
                     continue
                 raise SourceError(self._refused_message(429, url))
 
+            # A challenge is answered, not refused: the body is an interstitial that
+            # only a browser can clear. Waiting cannot change that, so it does not get
+            # the retry loop - instead it gets answered once, by a browser, and the
+            # cookie that comes back carries the rest of the run.
+            if response.status_code in (403, 503) and _is_challenge(response):
+                if self._clear_challenge(url):
+                    continue
+                raise ChallengeError(
+                    self._challenge_message(url, response.headers.get("cf-ray"))
+                )
+
             # 403 is "we do not like your client". A browser fingerprint is already
             # being presented, so there is nothing left to escalate to - back off in
             # case it is transient, then say so plainly.
@@ -621,11 +715,52 @@ class InkdecksSource:
                 raise SourceError(self._refused_message(403, url))
 
             response.raise_for_status()
+            # The cookie is doing its job, so a later refresh is not part of a loop.
+            self._clearances = 0
             self._speed_up()
             self._write_cache(cache_key, response.text)
             return response.text
 
         raise SourceError(f"inkdecks: giving up on {url}")  # kept explicit
+
+    def _cookies(self) -> dict | None:
+        """The clearance cookie, while it is worth presenting.
+
+        An expired one is dropped rather than sent: it would earn a challenge either
+        way, and sending a stale cookie is just noise on their side.
+        """
+        if self._clearance and self._clearance.fresh():
+            return {"cf_clearance": self._clearance.cookie}
+        return None
+
+    def _clear_challenge(self, url: str) -> bool:
+        """Answer a challenge in a browser. True if the request is worth retrying.
+
+        Every path out of here is a soft one. A build that cannot open a browser
+        should say what it could not do and stop cleanly, not raise from inside the
+        retry loop with a stack trace about asyncio.
+        """
+        if not self.use_browser:
+            return False
+        if self._clearances >= MAX_CLEARANCES:
+            log.warning(
+                "inkdecks: %d challenges cleared in a row without a single page "
+                "succeeding, so the cookie is not being honoured - not opening "
+                "another browser",
+                self._clearances,
+            )
+            return False
+
+        try:
+            earned = clearance_store.mint(url)
+        except SourceError as error:
+            log.warning("inkdecks: could not clear the challenge - %s", error)
+            return False
+
+        self._clearances += 1
+        self._wear(earned)
+        clearance_store.save(self._clearance_path(), earned)
+        return True
 
     def _slow_down(self) -> None:
         """Widen the gap between requests after a rate limit, and keep it widened.
@@ -691,6 +826,30 @@ class InkdecksSource:
             )
         except OSError:
             pass  # a cache we cannot write is not worth failing a build over
+
+    def _challenge_message(self, url: str, ray: str | None) -> str:
+        """What to say when the site asks for a browser.
+
+        Deliberately not the 403 text: pointing the reader at the impersonation
+        profile here would send them to rewrite a line that is working fine.
+        """
+        reason = (
+            "--inkdecks-no-browser is set, so it was not answered"
+            if not self.use_browser
+            else "and answering it in a browser did not work - see the warning above"
+        )
+        return "\n".join(
+            [
+                f"inkdecks served a Cloudflare challenge for {url}, {reason}.",
+                "  This is not a refusal and not a rate limit: the response is an "
+                "interstitial asking for a browser to run JavaScript and set a "
+                "clearance cookie. No delay clears it, so it was not retried.",
+                "  Nothing already cached is refetched, so a re-run resumes from here, "
+                "and --source local builds a report from the decks already on disk.",
+                f"  Quote this if you ask inkdecks about it: CF-RAY "
+                f"{ray or 'absent from the response'}.",
+            ]
+        )
 
     def _refused_message(self, status: int, url: str) -> str:
         lines = [f"inkdecks refused the request ({status}) for {url}, and waiting did not help."]

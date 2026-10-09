@@ -77,21 +77,15 @@ $env:INKDECKS_CONSENT = "1"                                              # this 
 lorcana-meta build --last 14 --top 32 --min-players 32
 ```
 
-### How long the first build takes
+**The first build is slow; every one after it is seconds.** Their rate limit works out
+to 4–9 deck pages a minute, so the command above takes roughly an hour and a half — it
+has not hung. Decklists never change once published, so they are cached forever and a
+rebuild fetches only what is new. A long first build does not have to happen in one
+sitting: decks are fetched best-placed first, so Ctrl+C and the same command tomorrow
+resumes where it stopped, and a partial field says so.
 
-Their rate limit, not politeness for its own sake — measured at roughly **4–9 deck
-pages a minute**.
-
-| Window | Decks | First build |
-|---|---|---|
-| 14 days, top 8 | ~80 | ~20 min |
-| 14 days, top 32 | ~370 | ~1.5 h |
-| 30 days, top 32 | ~800 | ~3.5 h |
-
-**Every build after that is seconds.** Decklists never change once published, so they
-are cached forever and a rebuild fetches only what is new. A long first build does not
-have to happen in one sitting: decks are fetched best-placed first, so Ctrl+C and the
-same command tomorrow resumes where it stopped, and a partial field says so.
+A Chrome window may open for a few seconds near the start and close by itself. That is
+the Cloudflare challenge being answered, once; nothing to click.
 
 ---
 
@@ -124,6 +118,7 @@ inkdecks only:
 | `--inkdecks-consent` | – | Confirm you have their written permission. Required. |
 | `--inkdecks-delay F` | `3.0` | Seconds between requests. Grows on a 429, never shrinks within a run. |
 | `--inkdecks-max-decks N` | `1500` | Stop after this many decks, best-placed first. |
+| `--inkdecks-no-browser` | – | Never open a browser to clear a Cloudflare challenge. The build stops when it meets one instead. |
 
 local only: `--local-dir` (default `data/decks`) and `--format` (default
 `Core Constructed`, for decks that carry no format of their own).
@@ -147,7 +142,9 @@ failing check first. If your own permission differs, changing that is a delibera
 edit, not a default to drift into.
 
 The crawl is one request at a time with an adaptive delay, deck pages cached forever,
-and a session that is read-only by construction.
+and a session that is read-only by construction. Their deck pages also sit behind a
+Cloudflare challenge: a browser answers it once, and the cookie it earns carries the
+rest of the crawl over the ordinary client. `--inkdecks-no-browser` turns that off.
 
 **Card data:** [lorcana-api.com](https://lorcana-api.com/) — free, no key. One bulk
 endpoint cached for 24 hours, supplying card text, cost, inks, type and images.
@@ -168,7 +165,7 @@ No dependencies, no network, no permissions:
 python tests/test_pipeline.py        # parsing, inks, aggregation, movement, result cuts
 python tests/test_cluster.py         # archetype detection
 python tests/test_local_source.py    # decks off disk, paste importer
-python tests/test_inkdecks.py        # parsers, consent, throttle, lock
+python tests/test_inkdecks.py        # parsers, consent, throttle, lock, challenge
 python tests/test_report_shape.py    # report and page agree on their shape
 python tests/test_bundle.py          # the single file stays self-contained
 python tests/check_report.py         # a built report is sane (needs a build first)
@@ -202,7 +199,7 @@ never runs in CI.
 | `site/data/meta.json` | The data behind it. Records the version, commit and dirty flag of the build that made it. |
 | `site/` | The page: one HTML file, one stylesheet, one script, no build step. |
 | `src/lorcana_meta/` | `sources/` fetch decklists, `cards.py` resolves names, `cluster.py` finds archetypes, `analyze.py` does the maths, `bundle.py` writes the single file, `cli.py` wires it together. |
-| `.cache/` | Cached deck pages, the learned request rate, the card database. Safe to delete. |
+| `.cache/` | Cached deck pages, the learned request rate, the clearance cookie, the card database. Safe to delete. |
 | `MAINTAINING.md` | Commands, hard rules, platform traps, and the additions that were measured and rejected. |
 
 A new source is one file in `src/lorcana_meta/sources/`: implement
@@ -213,6 +210,8 @@ A new source is one file in `src/lorcana_meta/sources/`: implement
 
 ## Licence
 
-Personal project, no licence granted. Disney Lorcana is a trademark of Disney and
-Ravensburger; this is an unofficial fan tool, not published, endorsed or approved by
-either. Decklist data belongs to its sources under their own terms.
+Code: [MIT](LICENSE). Data: not ours to license — decklists belong to their sources
+under their own terms, which is why an inkdecks build is marked unpublishable.
+
+Disney Lorcana is a trademark of Disney and Ravensburger; this is an unofficial fan
+tool, not published, endorsed or approved by either.

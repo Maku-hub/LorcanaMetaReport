@@ -155,6 +155,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="stop after this many decks, best-placed first, so a mistyped date range "
         "cannot become thousands of requests (default: 1500)",
     )
+    inkdecks.add_argument(
+        "--inkdecks-no-browser",
+        action="store_true",
+        help="do not open a browser to clear a Cloudflare challenge on deck pages. "
+        "The build then stops when it meets one, instead of answering it once and "
+        "carrying the cookie for the rest of the run",
+    )
 
     # --format lives here, not next to --source, because it only ever labels decks that
     # arrive without a format of their own. Sitting at the top it read like the switch
@@ -251,6 +258,7 @@ def _build_source(args: argparse.Namespace):
             # Attendance is on the listing row, so this filters before any deck page
             # is fetched - it saves requests rather than wasting them.
             min_players=args.min_players,
+            use_browser=not args.inkdecks_no_browser,
         )
     raise SourceError(f"Unknown source {args.source!r}")
 

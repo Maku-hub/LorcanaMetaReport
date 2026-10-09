@@ -5,7 +5,16 @@ __pycache__/
 venv/
 *.egg-info/
 
-# Local cache of the card database (re-downloaded on demand)
+# Linter cache. ruff writes its own .gitignore inside, so this is belt and braces -
+# but MAINTAINING.md tells you to run `ruff check .` locally, so everyone grows this
+# directory, and whether it stays out of `git status` should not rest on what a
+# third-party tool happens to do.
+.ruff_cache/
+
+# Everything the build caches: the card database, cached deck pages, the learned
+# request rate - and the Cloudflare clearance cookie, which is a live credential
+# tied to this machine. Do not narrow this to one file; a committed cf_clearance
+# is a secret in history, and git history is hard to scrub.
 .cache/
 
 # Scratch
@@ -25,10 +34,18 @@ venv/
 # Regenerate in seconds:  python tools/generate_sample_decks.py
 site/data/meta.json
 
-# The synthetic sample field. Generated, and its dates are relative to "today", so it
-# shows up as modified every day and after every build - 110 KB of pure noise in
+# Decklists under data/decks/ - both kinds, neither of which belongs in history.
+#
+# The synthetic sample field is generated and its dates are relative to "today", so
+# it shows up as modified every day and after every build - 110 KB of pure noise in
 # `git status`. Nothing depends on a committed copy: CI regenerates it, and so does
 # the documented first command.
 #
-# Regenerate:  python tools/generate_sample_decks.py
-data/decks/sample-field.json
+# Your own lists are the other kind: local events, lists copied by hand. They are
+# yours, they may not be yours to redistribute, and the same retroactive-publication
+# problem as site/data/meta.json applies to them.
+#
+# Regenerate the sample:   python tools/generate_sample_decks.py
+# Commit one on purpose:   git add -f data/decks/whatever.json
+data/decks/*
+!data/decks/README.md

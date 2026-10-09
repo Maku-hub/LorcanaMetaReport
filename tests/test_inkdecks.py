@@ -469,6 +469,333 @@ def test_refusal_messages_render():
     check("CF-RAY" in blocked, "and points at the id inkdecks would need")
 
 
+# ------------------------------------------------------------------ challenges
+
+class _Response:
+    """Just enough of a response for the retry loop to make its decision."""
+
+    def __init__(self, status, headers=None, text=""):
+        self.status_code = status
+        self.headers = headers or {}
+        self.text = text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise AssertionError("a refused response should never get this far")
+
+
+class _CountingSession:
+    def __init__(self, response):
+        self._response = response if isinstance(response, list) else [response]
+        self.calls = 0
+        self.sent = []
+        self.headers = {}
+        self.cookies = type("Cookies", (), {"clear": lambda self: None})()
+
+    def get(self, url, params=None, timeout=None, cookies=None):
+        self.sent.append(cookies)
+        self.calls += 1
+        return self._response[min(self.calls - 1, len(self._response) - 1)]
+
+
+def _answered_with(response, **kwargs):
+    """Drive _get against one canned response, without any real waiting.
+
+    use_browser is off unless a test says otherwise: these tests must never reach
+    for a real Chrome, and a test that means to exercise that path injects a fake
+    mint rather than letting the real one run.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def driven():
+        kwargs.setdefault("use_browser", False)
+        source = isolated(delay=0.5, **kwargs)
+        session = _CountingSession(response)
+        source._session = session
+        source._wait = lambda: None
+        slept = []
+        real_sleep, time.sleep = time.sleep, slept.append
+        try:
+            yield source, session, slept
+        finally:
+            time.sleep = real_sleep
+
+    return driven()
+
+
+def _provoke(source):
+    try:
+        source._get("/lorcana-metagame/deck-1", cache_ttl=None, cache_key="probe")
+        return None
+    except SourceError as error:
+        return error
+
+
+def test_a_challenge_is_detected_and_not_retried():
+    """Cloudflare's own label is the signal; the body check is only a fallback.
+
+    Retrying here is worse than useless: no delay clears an interstitial, so three
+    attempts per deck turns a field of decks into several hundred requests that all
+    read back the same answer.
+    """
+    from lorcana_meta.sources.inkdecks import ChallengeError
+
+    header = _Response(403, {"cf-mitigated": "challenge", "cf-ray": "a47cb201-WAW"})
+    with _answered_with(header) as (source, session, slept):
+        error = _provoke(source)
+        check(isinstance(error, ChallengeError), f"raised a ChallengeError: {error!r}")
+        check(session.calls == 1, f"asked exactly once, not three times: {session.calls}")
+        check(not slept, f"and did not back off at all: {slept}")
+        check("a47cb201-WAW" in str(error), f"quotes the live CF-RAY: {error}")
+        check("challenge" in str(error).lower(), f"names what happened: {error}")
+        check("--source local" in str(error), f"offers a way to keep working: {error}")
+
+    # The same page without the header still has to be recognised.
+    body = _Response(403, {}, "<title>Just a moment...</title><div id='cf_chl_ctx'>")
+    with _answered_with(body) as (source, session, _):
+        check(
+            isinstance(_provoke(source), ChallengeError),
+            "an unlabelled interstitial is still read from its body",
+        )
+        check(session.calls == 1, f"and is not retried either: {session.calls}")
+
+
+def test_a_plain_403_is_still_retried():
+    """The fingerprint case is unchanged - that one can be transient."""
+    from lorcana_meta.sources.inkdecks import ChallengeError
+
+    with _answered_with(_Response(403, {}, "<h1>Forbidden</h1>")) as (source, session, slept):
+        error = _provoke(source)
+        check(isinstance(error, SourceError), f"still raises: {error!r}")
+        check(
+            not isinstance(error, ChallengeError),
+            "a bare 403 must not be mistaken for a challenge",
+        )
+        check(session.calls == 3, f"backed off and retried twice: {session.calls}")
+        check(len(slept) == 2, f"waited between attempts: {slept}")
+        check("escalate" in str(error), f"keeps the fingerprint advice: {error}")
+
+
+def test_a_challenge_stops_the_run_at_once():
+    """A challenge is systemic by nature, so the 8-failure budget does not apply."""
+    from datetime import date
+
+    from lorcana_meta.sources.inkdecks import ChallengeError
+
+    source = isolated(delay=0.5)
+    stubs = [
+        {"deck_id": str(i), "deck_name": f"deck {i}", "path": f"/p{i}"} for i in range(50)
+    ]
+    source._fetch_index = lambda start, end: stubs
+    attempts = []
+
+    def challenged(stub):
+        attempts.append(stub["deck_id"])
+        raise ChallengeError("inkdecks served a Cloudflare challenge")
+
+    source._fetch_decklist = challenged
+
+    try:
+        source.fetch(date(2026, 8, 1), date(2026, 8, 31))
+        FAILURES.append("a challenge should abort the run")
+    except ChallengeError as error:
+        check(len(attempts) == 1, f"gave up after one deck, not eight: {len(attempts)}")
+        check(source.skipped == [], f"a challenge is not a skipped deck: {source.skipped}")
+        check("0 of 50" in str(error), f"says how much was salvaged: {error}")
+
+
+# --------------------------------------------------------- clearing a challenge
+#
+# The browser half is measured, not tested: it needs a real Chrome and a real
+# challenge. What is tested is everything around it - that it is reached for
+# exactly when it should be, that what it returns is used, and that none of it
+# runs when the build was told not to.
+
+def _fake_mint(cookie="CF-COOKIE", agent="Mozilla/5.0 (Windows NT 10.0) TestChrome/1"):
+    import contextlib
+    import time as clock
+
+    from lorcana_meta.sources import clearance
+
+    @contextlib.contextmanager
+    def patched():
+        calls = []
+
+        def mint(url):
+            calls.append(url)
+            return clearance.Clearance(cookie, agent, clock.time())
+
+        real, clearance.mint = clearance.mint, mint
+        try:
+            yield calls
+        finally:
+            clearance.mint = real
+
+    return patched()
+
+
+CHALLENGED = {"cf-mitigated": "challenge", "cf-ray": "ray-1"}
+
+
+def test_a_challenge_is_answered_once_and_the_cookie_carries_the_run():
+    """The whole point: one browser page, then the ordinary client does the crawl."""
+    pages = [_Response(403, CHALLENGED), _Response(200, {}, "<html>deck</html>")]
+    with _answered_with(pages, use_browser=True) as (source, session, _):
+        with _fake_mint() as minted:
+            html = source._get("/lorcana-metagame/deck-1", cache_ttl=None, cache_key="k")
+
+        check(html == "<html>deck</html>", f"the retry returned the page: {html!r}")
+        check(len(minted) == 1, f"the browser was opened once: {minted}")
+        check(session.sent[0] is None, "the first try carried no cookie, correctly")
+        check(
+            session.sent[1] == {"cf_clearance": "CF-COOKIE"},
+            f"the retry carried what the browser earned: {session.sent[1]}",
+        )
+        check(
+            session.headers.get("User-Agent") == "Mozilla/5.0 (Windows NT 10.0) TestChrome/1",
+            f"and wears the browser's identity, or the cookie is void: {session.headers}",
+        )
+        check(
+            (Path(source.cache_dir) / "clearance.json").exists(),
+            "the clearance is kept, so the next run need not open a browser",
+        )
+
+
+def test_a_remembered_clearance_skips_the_browser_entirely():
+    """A re-run inside the passage window should cost no browser at all."""
+    import json
+    import time as clock
+
+    with tempfile.TemporaryDirectory() as directory:
+        (Path(directory) / "clearance.json").write_text(
+            json.dumps(
+                {"cookie": "KEPT", "user_agent": "RememberedChrome/9", "obtained": clock.time()}
+            ),
+            encoding="utf-8",
+        )
+        source = InkdecksSource(consent=True, cache_dir=directory, delay=0.5)
+        check(source._cookies() == {"cf_clearance": "KEPT"}, "the kept cookie is presented")
+        check(
+            source._session.headers.get("User-Agent") == "RememberedChrome/9",
+            "with the identity it was issued to",
+        )
+
+
+def test_a_stale_clearance_is_dropped_rather_than_presented():
+    """Sending an expired cookie earns the same challenge and tells them nothing."""
+    import json
+    import time as clock
+
+    from lorcana_meta.sources.clearance import CLEARANCE_TTL
+
+    with tempfile.TemporaryDirectory() as directory:
+        (Path(directory) / "clearance.json").write_text(
+            json.dumps(
+                {
+                    "cookie": "OLD",
+                    "user_agent": "OldChrome/1",
+                    "obtained": clock.time() - CLEARANCE_TTL - 60,
+                }
+            ),
+            encoding="utf-8",
+        )
+        source = InkdecksSource(consent=True, cache_dir=directory, delay=0.5)
+        check(source._clearance is None, "a spent clearance is not loaded")
+        check(source._cookies() is None, "and nothing stale is sent")
+
+
+def test_no_browser_means_no_browser():
+    """--inkdecks-no-browser has to be honoured even though a browser would work."""
+    with _answered_with(_Response(403, CHALLENGED), use_browser=False) as (source, session, _):
+        with _fake_mint() as minted:
+            error = _provoke(source)
+        check(minted == [], f"nothing was opened: {minted}")
+        check(session.calls == 1, f"and it did not retry either: {session.calls}")
+        check(
+            "--inkdecks-no-browser is set" in str(error),
+            f"the message says why it gave up rather than blaming the site: {error}",
+        )
+
+
+def test_a_site_that_ignores_the_cookie_does_not_get_a_browser_per_deck():
+    """If clearing it changes nothing, opening more browsers is useless and rude."""
+    from lorcana_meta.sources.inkdecks import MAX_CLEARANCES
+
+    with _answered_with(_Response(403, CHALLENGED), use_browser=True) as (source, _, _s):
+        with _fake_mint() as minted:
+            for _ in range(6):
+                _provoke(source)
+        check(
+            len(minted) == MAX_CLEARANCES,
+            f"capped at {MAX_CLEARANCES}, not one per attempt: {len(minted)}",
+        )
+
+
+def test_a_long_run_may_refresh_the_cookie_as_often_as_it_needs():
+    """The cap is on futile clearances, not on how long a build is allowed to be.
+
+    A cookie lasts around twenty minutes and a top-32 field takes about ninety, so a
+    real build refreshes four or five times. A run-long cap would have killed exactly
+    the builds this tool exists for, while still looking fine in a short test.
+    """
+    from lorcana_meta.sources.inkdecks import MAX_CLEARANCES
+
+    # Each cycle: the cookie has expired, a browser clears it, the page then works.
+    pages = [_Response(403, CHALLENGED), _Response(200, {}, "<html>deck</html>")]
+    with _answered_with(pages, use_browser=True) as (source, session, _):
+        with _fake_mint() as minted:
+            for index in range(MAX_CLEARANCES + 4):
+                session.calls = 0  # a fresh request, challenged then served
+                html = source._get("/p", cache_ttl=None, cache_key=f"deck-{index}")
+                check(html == "<html>deck</html>", f"cycle {index} served the page")
+        check(
+            len(minted) == MAX_CLEARANCES + 4,
+            f"every expiry was refreshed, none refused: {len(minted)}",
+        )
+
+
+def test_a_browser_that_cannot_run_fails_softly():
+    """A missing Chrome must end in the plain message, not an asyncio stack trace."""
+    from lorcana_meta.sources import clearance
+
+    def refuse(url):
+        raise SourceError("no browser here")
+
+    with _answered_with(_Response(403, CHALLENGED), use_browser=True) as (source, _, _s):
+        real, clearance.mint = clearance.mint, refuse
+        try:
+            error = _provoke(source)
+        finally:
+            clearance.mint = real
+        check(isinstance(error, SourceError), f"still a clean SourceError: {error!r}")
+        check("Cloudflare challenge" in str(error), f"and still explains itself: {error}")
+
+
+def test_clearance_survives_a_round_trip_through_the_cache():
+    from lorcana_meta.sources import clearance
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "clearance.json"
+        original = clearance.Clearance("c", "ua", time.time())
+        clearance.save(path, original)
+        back = clearance.load(path)
+        check(back == original, f"round-trips unchanged: {back}")
+        check(clearance.load(Path(directory) / "missing.json") is None, "absent reads as None")
+        path.write_text("{not json", encoding="utf-8")
+        check(clearance.load(path) is None, "a corrupt file is ignored, not fatal")
+
+
+def test_the_challenge_page_is_recognised_in_any_language():
+    """The site is served in Polish here, so matching on English text would miss it."""
+    from lorcana_meta.sources.clearance import _still_challenged
+
+    polish = "<!DOCTYPE html><html lang='pl-pl'><head><title>Cierpliwosci...</title>" \
+             "<script src='/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page'>"
+    check(_still_challenged(polish), "the Polish interstitial is still an interstitial")
+    check(not _still_challenged("<html><body>deck list</body></html>"), "a real page is not")
+
+
 # ------------------------------------------------------------------ transport
 
 def test_there_is_one_client_and_it_is_read_only():
@@ -682,6 +1009,48 @@ def test_one_refused_deck_does_not_kill_the_run():
     decks = source.fetch(date(2026, 8, 1), date(2026, 8, 31))
     check(decks == ["0", "1", "3", "4"], f"the other four survived: {decks}")
     check(source.skipped == ["2"], f"the failure is recorded, not hidden: {source.skipped}")
+
+
+def test_progress_is_reported_for_every_deck():
+    """One line per deck, not one per twenty-five.
+
+    At 3-9s a page, a milestone every 25 decks means minutes of silence, which reads
+    exactly like a hung build. The empty-list case is in here because logging after
+    that check would make the counter skip, which is the same problem in miniature.
+    """
+    import io
+    import logging
+    from datetime import date
+
+    from lorcana_meta.models import DeckCard
+
+    source = isolated(delay=0.5)
+    stubs = [
+        {"deck_id": str(i), "deck_name": f"deck {i}", "path": f"/p{i}"} for i in range(7)
+    ]
+    source._fetch_index = lambda start, end: stubs
+    # Deck 3 parses to nothing. It still has to advance the count.
+    source._fetch_decklist = lambda stub: [] if stub["deck_id"] == "3" else [DeckCard("C", 60)]
+    source._to_deck = lambda stub, cards: stub["deck_id"]
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    logger = logging.getLogger("lorcana_meta.sources.inkdecks")
+    before = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        source.fetch(date(2026, 8, 1), date(2026, 8, 31))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(before)
+
+    lines = [line for line in stream.getvalue().splitlines() if "decklists read" in line]
+    check(len(lines) == len(stubs), f"one line per deck: {len(lines)} for {len(stubs)}")
+    check(
+        [line.split()[1] for line in lines] == [f"{i}/7" for i in range(1, 8)],
+        f"counting every deck in order, none skipped: {lines}",
+    )
 
 
 def test_best_placed_decks_are_fetched_first():
