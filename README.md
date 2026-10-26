@@ -48,34 +48,58 @@ is playing, what is winning, and what to prepare for.
 
 ## Getting started
 
+### 1. Install
+
+Only the interpreter name and the activate line differ between systems.
+
+Linux / macOS:
+
 ```bash
-python -m venv .venv
-.venv/Scripts/activate          # Windows;  source .venv/bin/activate  elsewhere
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
-### Try it without touching anyone's server
+Windows, PowerShell:
 
-```bash
-python tools/generate_sample_decks.py
-lorcana-meta build --source local --last 40
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
 ```
 
-Open `report.html`. No server, no hosting, nothing leaves your machine. The sample
-field uses real card names but invented decks, players and events, and the report says
-so on its own front page.
+### 2. Confirm you have inkdecks' permission
 
-### Build from inkdecks
+Their terms require written permission for automated access, and this is you stating
+you have it — see [Data sources](#data-sources). The first line covers the shell you
+are in, the second every future one.
 
-Their terms require written permission for automated access, and the flag is you
-stating you have it — see [Data sources](#data-sources).
+Linux / macOS:
 
 ```bash
-$env:INKDECKS_CONSENT = "1"                                              # this window
-[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")   # and future ones
+export INKDECKS_CONSENT=1
+echo 'export INKDECKS_CONSENT=1' >> ~/.profile
+```
 
+Windows, PowerShell:
+
+```powershell
+$env:INKDECKS_CONSENT = "1"
+[Environment]::SetEnvironmentVariable("INKDECKS_CONSENT", "1", "User")
+```
+
+You can skip the variable entirely and pass `--inkdecks-consent` on every build
+instead.
+
+### 3. Build
+
+The same command everywhere:
+
+```
 lorcana-meta build --last 14 --top 32 --min-players 32
 ```
+
+Open `report.html`. No server, no hosting, nothing leaves your machine.
 
 **The first build is slow; every one after it is seconds.** Their rate limit works out
 to 4–9 deck pages a minute, so the command above takes roughly an hour and a half — it
@@ -97,7 +121,7 @@ lorcana-meta build [options]
 
 | Option | Default | What it does |
 |---|---|---|
-| `--source {inkdecks,local}` | `inkdecks` | Where decklists come from. |
+| `--source {inkdecks,local}` | `inkdecks` | Where decklists come from. `local` reads `data/decks/*.{json,txt}` instead of fetching anything — see [`data/decks/README.md`](data/decks/README.md) for the format. |
 | `--last N` | `30` | Days back from today. |
 | `--start` / `--end` | – | Explicit window, `YYYY-MM-DD`. Overrides `--last`. |
 | `--top N` | `32` | Keep finishes this high or better. `0` keeps everything. |
@@ -120,8 +144,12 @@ inkdecks only:
 | `--inkdecks-max-decks N` | `1500` | Stop after this many decks, best-placed first. |
 | `--inkdecks-no-browser` | – | Never open a browser to clear a Cloudflare challenge. The build stops when it meets one instead. |
 
-local only: `--local-dir` (default `data/decks`) and `--format` (default
-`Core Constructed`, for decks that carry no format of their own).
+`--source local` only:
+
+| Option | Default | What it does |
+|---|---|---|
+| `--local-dir` | `data/decks` | Directory to read decklists from. |
+| `--format` | `Core Constructed` | Format label for decks that carry none themselves. Ignored by inkdecks, which names its own from `--inkdecks-category`. |
 
 ---
 
@@ -148,12 +176,6 @@ rest of the crawl over the ordinary client. `--inkdecks-no-browser` turns that o
 
 **Card data:** [lorcana-api.com](https://lorcana-api.com/) — free, no key. One bulk
 endpoint cached for 24 hours, supplying card text, cost, inks, type and images.
-
-**Your own files** (`--source local`) read `data/decks/*.{json,txt}` — good for local
-events no platform covers, and for lists copied by hand. Format:
-[`data/decks/README.md`](data/decks/README.md). `tools/import_pasted_decks.py` converts
-a file of pasted lists; reading a page and copying a list yourself is not automated
-access, and the tool fetches nothing.
 
 ---
 
