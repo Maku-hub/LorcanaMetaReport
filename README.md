@@ -93,10 +93,10 @@ instead.
 
 ### 3. Build
 
-The same command everywhere:
+The same command everywhere (example usage):
 
 ```
-lorcana-meta build --last 14 --top 32 --min-players 32
+lorcana-meta build --last 14 --top 16 --min-players 32 --min-pair-decks 1 --refresh-cards --inkdecks-consent
 ```
 
 Open `report.html`. No server, no hosting, nothing leaves your machine.
