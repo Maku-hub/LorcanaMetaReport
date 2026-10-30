@@ -166,6 +166,40 @@ def test_a_build_can_be_told_not_to_bundle():
         check(not out.exists(), "and left the single file alone")
 
 
+def test_a_percentage_cut_reaches_the_report():
+    """`--top 50%` has to survive all the way into the file the page reads.
+
+    The cut itself is unit-tested, but the number the page prints comes from
+    `filters`, and a percentage has no `top` to put there - it is a different depth
+    at every event. If `top_percent` did not travel with it, the report would read
+    as though nothing had been cut, which is the one wrong thing it could say.
+    """
+    from lorcana_meta.cli import main as cli_main
+
+    with tempfile.TemporaryDirectory() as directory:
+        data = Path(directory) / "meta.json"
+        code = cli_main(
+            [
+                "build",
+                "--source",
+                "local",
+                "--local-dir",
+                str(ROOT / "data" / "decks"),
+                "--last",
+                "400",
+                "--top",
+                "50%",
+                "--out",
+                str(data),
+                "--no-bundle",
+            ]
+        )
+        check(code == 0, f"the build succeeded, got {code}")
+        filters = json.loads(data.read_text(encoding="utf-8"))["filters"]
+        check(filters["top_percent"] == 50.0, f"the share travelled: {filters}")
+        check(filters["top"] is None, f"and carries no fixed number of places: {filters}")
+
+
 def main() -> int:
     configure_output()
     if not REPORT.exists():

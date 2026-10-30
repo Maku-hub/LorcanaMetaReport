@@ -49,9 +49,31 @@ SIGNATURE_MIN_EDGE = 0.25
 
 
 def deck_counts(item: ResolvedDeck) -> Counter:
+    """The vector two decks are compared on: card name -> copies.
+
+    Cards the database has never heard of are in here too, under the name the
+    decklist used, and they matter most in the case that is hardest to get right.
+    When a set lands, its cards are the newest thing in every list and the card
+    database is the last to know about them. Leaving them out would shrink the
+    vector exactly when the meta is moving, and a genuinely new archetype - one
+    built out of new cards - would carry no evidence that it is new. It would be
+    absorbed into whichever old shell it superficially resembles, and the report
+    would state a confident share for an archetype that is really two decks.
+
+    The arithmetic is one-sided in the right direction: weighted Jaccard adds a
+    shared card to both the numerator and the denominator, and an unshared one to
+    the denominator alone. Counting these can sharpen a real difference or confirm
+    a real overlap; it cannot invent overlap that is not there.
+
+    They are keyed on the raw name, which is what `analyze._tally` uses as well -
+    the two have to agree, or a card would be clustered under one name and reported
+    under another. See MAINTAINING.md for the limit that follows from it.
+    """
     counts: Counter = Counter()
     for card, count in item.entries:
         counts[card.name] += count
+    for line in item.unknown:
+        counts[line.name] += line.count
     return counts
 
 

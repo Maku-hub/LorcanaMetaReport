@@ -53,7 +53,7 @@ function load() {
              withDefaults, brewCoverage, movementNote, deltaText, deltaPlain,
              buildStamp, playedBy, threatRows, cardPosition, esc, inspectCard,
              winningChart, activeCut, bestConverterTile, winRateLabel,
-             winRateNote, convertingArchetypes };
+             winRateNote, convertingArchetypes, newCardBadge, topLabel };
   `;
   return new Function(stubs + source + exports)();
 }
@@ -66,6 +66,35 @@ function report(mutate) {
   const copy = JSON.parse(JSON.stringify(built));
   if (mutate) mutate(copy);
   return app.withDefaults(copy);
+}
+
+/**
+ * Force a report to have usable movement, whatever the last build happened to be.
+ *
+ * Movement needs both halves of the window to hold enough decks, and a real window
+ * often fails that honestly: an 11-day range whose only weekend falls in the first
+ * half leaves the second with nothing. Tests that read movement off the built report
+ * then fail on a report that is perfectly correct, which teaches nobody anything.
+ */
+function withMovement(r) {
+  r.trend.usable = true;
+  r.trend.reason = "";
+  r.trend.first.decks = Math.max(r.trend.first.decks, 20);
+  r.trend.second.decks = Math.max(r.trend.second.decks, 20);
+  const move = (index) => ({
+    first_decks: 10,
+    second_decks: 12,
+    first_share: 10,
+    second_share: 10 + (index % 5),
+    delta: index % 5,
+  });
+  r.pairs.forEach((pair, i) => {
+    pair.trend = move(i);
+    pair.variants.forEach((v, j) => (v.trend = move(i + j)));
+  });
+  r.inks.forEach((ink, i) => (ink.trend = move(i)));
+  r.threats.forEach((threat, i) => (threat.trend = move(i)));
+  return r;
 }
 
 function render(meta, route) {
@@ -266,11 +295,7 @@ function test_the_archetype_chart_states_how_much_of_the_field_it_covers() {
 
 /** Movement belongs beside every share, on all three charts or none. */
 function test_all_three_charts_carry_movement_together() {
-  const meta = report();
-  if (!meta.trend.usable) {
-    failures.push("the built report has no usable movement - rebuild over a wider window");
-    return;
-  }
+  const meta = report(withMovement);
 
   // Each of the three charts explains movement itself; a page-wide check passed once
   // when one of them lost its note and a sibling still carried the same sentence.
@@ -489,6 +514,7 @@ function test_the_overflow_badge_counts_contributors_the_payload_left_out() {
 /** Cards carry movement too, and it can be sorted by. */
 function test_the_threat_board_can_rank_by_what_the_field_is_picking_up() {
   const meta = report((r) => {
+    withMovement(r);
     r.threats.forEach((threat, index) => {
       threat.trend =
         index % 3 === 2
@@ -545,6 +571,29 @@ function test_the_card_inspector_shows_where_the_card_sits_in_the_meta() {
   check(body !== null, "the inspector rendered something");
   check(/Chance you meet it/.test(body || ""), `field presence is shown: ${body}`);
   check(/Played by/.test(body || ""), "and the decks that play it");
+
+  // What the card itself already says is not said again beside it. Cost, type,
+  // lore, rarity and the rules text are printed on the image, and the image is
+  // right there - but they are kept as a fallback, because the offline single file
+  // loads card art from a CDN and shows none of it on a train.
+  check(/<img /.test(body || ""), "the card image is shown");
+  check(
+    /class="inspector__printed" hidden/.test(body || ""),
+    `the printed detail is present but hidden behind the image: ${body}`
+  );
+  check(/onerror=/.test(body || ""), "and is revealed if the image never arrives");
+
+  const artless = report((r) => {
+    r.cards[threat.name].image = "";
+  });
+  app.state.meta = artless;
+  const bare = app.inspectCard(threat.name) || "";
+  check(!/<img /.test(bare), "with no image there is no image tag");
+  check(
+    /class="inspector__printed"(?! hidden)/.test(bare),
+    `and the printed detail is shown instead of nothing: ${bare.slice(0, 200)}`
+  );
+  app.state.meta = meta;
   check(
     (body || "").includes(app.esc(threat.archetypes[0].label)),
     `naming the archetype: ${threat.archetypes[0].label}`
@@ -560,6 +609,41 @@ function test_the_card_inspector_shows_where_the_card_sits_in_the_meta() {
   // A card outside the board must say so rather than imply nobody plays it.
   check(app.cardPosition("Not A Real Card") === null, "an unlisted card returns null");
 
+  // A card the database has not caught up with keeps every figure the report counted
+  // for it, and shows none of the printed detail nobody has checked. The sample field
+  // has no such card, so one is forced here.
+  const fresh = report((r) => {
+    const name = r.threats[0].name;
+    r.cards[name].in_database = false;
+    r.cards[name].image = "";
+    r.cards[name].inkable = null;
+    r.cards[name].cost = null;
+    r.cards[name].type = "";
+  });
+  app.state.meta = fresh;
+  const unknownBody = app.inspectCard(fresh.threats[0].name) || "";
+  check(
+    /Not in the card database yet/.test(unknownBody),
+    `the inspector says why it is bare: ${unknownBody.slice(0, 160)}`
+  );
+  check(
+    !/uninkable/.test(unknownBody),
+    "and does not claim it is uninkable when nobody knows"
+  );
+  check(
+    /Chance you meet it/.test(unknownBody),
+    "while still showing what the decklists say about it"
+  );
+  check(
+    app.newCardBadge(fresh.cards[fresh.threats[0].name]).includes("new"),
+    "and it is marked in the tables it appears in"
+  );
+  check(
+    app.newCardBadge({ in_database: true }) === "",
+    "a card that is in the database gets no badge"
+  );
+  check(app.newCardBadge({}) === "", "nor does one from an older report with no flag");
+
   // The lookup must not outlive the report it was built from.
   const other = report((r) => {
     r.threats = r.threats.slice(0, 1);
@@ -570,6 +654,43 @@ function test_the_card_inspector_shows_where_the_card_sits_in_the_meta() {
     other.threats.some((t) => t.name === threat.name) === (stale !== null),
     "the lookup follows the current report, not the previous one"
   );
+}
+
+/**
+ * A percentage cut has to read as a percentage everywhere it is named.
+ *
+ * `filters.top` is still the number of places, and a report built with `--top 50%`
+ * leaves it null - so every place that printed `num(filters.top)` would have shown
+ * nothing at all, quietly turning "top 50%" into "the fetched cut".
+ */
+function test_a_percentage_placing_cut_is_named_as_one() {
+  const share = report((r) => {
+    r.filters.top = null;
+    r.filters.top_percent = 50;
+  });
+  app.state.meta = share;
+  check(app.topLabel() === "50%", `the share is the label: ${app.topLabel()}`);
+  check(/top-50%/.test(app.winRateLabel()), `win rate names it: ${app.winRateLabel()}`);
+  check(/top 50%/.test(app.winRateNote()), `and so does its caveat: ${app.winRateNote()}`);
+
+  const about = render(share, "about");
+  check(/top 50%/.test(about), "the About page says how deep the cut went");
+  check(!/top 50 finishes/.test(about), "and does not drop the percent sign");
+
+  const fixed = report((r) => {
+    r.filters.top = 32;
+    r.filters.top_percent = null;
+  });
+  app.state.meta = fixed;
+  check(app.topLabel() === "32", `a fixed cut is unchanged: ${app.topLabel()}`);
+  check(/top-32/.test(app.winRateLabel()), "and still reads as a number of places");
+
+  const uncut = report((r) => {
+    r.filters.top = 0;
+    r.filters.top_percent = null;
+  });
+  app.state.meta = uncut;
+  check(app.topLabel() === "", "no cut is an empty label, which callers read as all");
 }
 
 /**
@@ -735,7 +856,14 @@ function test_match_win_rate_is_a_column_not_only_a_tooltip() {
  * read as how often a deck wins, which it is not.
  */
 function test_the_win_rate_names_the_sample_it_came_from() {
-  const meta = report();
+  // The cut is forced rather than read off whatever the last build used. Asserting
+  // "top-32" against the built report passed on the synthetic field and failed the
+  // moment a real one was built with `--top 50%` - the label was right and the test
+  // was wrong, which is the least useful way for a test to fail.
+  const meta = report((r) => {
+    r.filters.top = 32;
+    r.filters.top_percent = null;
+  });
   app.state.meta = meta;
 
   check(
@@ -773,8 +901,10 @@ function test_the_win_rate_names_the_sample_it_came_from() {
   );
 
   // With no placing cut there is no cut to name, and it must not print "top-null".
+  // Both forms have to be cleared: a share is what gets named when one is set.
   const uncut = report((r) => {
     r.filters.top = null;
+    r.filters.top_percent = null;
   });
   app.state.meta = uncut;
   check(
@@ -1092,6 +1222,10 @@ function test_every_caveat_is_reachable_when_it_applies() {
   // Conditions the sample field does not produce: a brew, a cut that separates
   // nothing at some events, and decks no cut can place.
   const meta = report((r) => {
+    // Movement is forced for the same reason the cuts below are: this asserts that
+    // each caveat is on the page when its condition holds, not that the last build
+    // happened to produce every condition at once.
+    withMovement(r);
     const pair = r.pairs[0];
     const variant = pair.variants[pair.variants.length - 1];
     Object.assign(variant, { is_brew: true, decks: 1, cards: [], cost_curve: [] });
@@ -1137,9 +1271,32 @@ function test_print_opens_every_disclosure() {
   );
 }
 
+/**
+ * The inspector hides a failed card image by setting `hidden` on it, and `hidden`
+ * is only a default that any `display` rule overrides. `.inspector img` sets
+ * `display: block`, so without a rule for the hidden case the broken-image icon
+ * stays on screen next to the detail that replaced it.
+ *
+ * Styling and behaviour are coupled here whether or not anyone writes it down, and
+ * the half that breaks is the one nobody is looking at.
+ */
+function test_a_failed_card_image_can_actually_hide_itself() {
+  const css = readFileSync(join(ROOT, "site", "assets", "style.css"), "utf8");
+  check(
+    /\.inspector img\[hidden\]\s*\{\s*display: none/.test(css),
+    "a hidden card image is styled away, not merely marked hidden"
+  );
+  const source = readFileSync(APP_JS, "utf8");
+  check(
+    /this\.hidden\s*=\s*true/.test(source),
+    "and the image is what sets that flag when it fails to load"
+  );
+}
+
 /* ------------------------------------------------------------------- main */
 
 const tests = Object.entries({
+  test_a_failed_card_image_can_actually_hide_itself,
   test_no_page_renders_a_missing_value,
   test_a_brew_loses_its_card_table_and_says_why,
   test_a_real_archetype_keeps_its_card_table,
@@ -1155,6 +1312,7 @@ const tests = Object.entries({
   test_the_overflow_badge_counts_contributors_the_payload_left_out,
   test_the_threat_board_can_rank_by_what_the_field_is_picking_up,
   test_the_card_inspector_shows_where_the_card_sits_in_the_meta,
+  test_a_percentage_placing_cut_is_named_as_one,
   test_the_overview_ranks_on_results_as_well_as_popularity,
   test_a_thin_cut_is_withheld_and_says_why,
   test_a_cut_that_excludes_nothing_admits_it,

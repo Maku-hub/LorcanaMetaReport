@@ -165,6 +165,34 @@ def _card_payload(card: Card) -> dict:
         "image": card.image,
         "set_id": card.set_id,
         "rarity": card.rarity,
+        "in_database": True,
+    }
+
+
+def _unknown_card_payload(name: str) -> dict:
+    """A card the database does not have, as the name the decklist used.
+
+    Same shape as a real payload so nothing downstream needs to special-case the
+    lookup; every attribute is None or empty because none of it is known. The page
+    reads `in_database` and says so rather than rendering blanks that look like
+    data - a card with cost "–" and no image should read as "we do not have this
+    card yet", not as a card that costs nothing.
+    """
+    return {
+        "name": name,
+        "inks": [],
+        "cost": None,
+        "type": "",
+        "base_type": "",
+        "inkable": None,
+        "lore": None,
+        "strength": None,
+        "willpower": None,
+        "text": "",
+        "image": "",
+        "set_id": "",
+        "rarity": "",
+        "in_database": False,
     }
 
 
@@ -192,6 +220,14 @@ def _tally(group: list[ResolvedDeck]) -> tuple[Counter, Counter, dict[str, Count
     Extracted because the threat board needs the same counts as the archetype tables
     and must not re-derive them: the per-deck rollup below is the subtle part, and two
     implementations of it would eventually disagree.
+
+    Cards the database has never heard of are counted here too, under the name the
+    decklist used. They were being dropped silently, which did not merely cost them
+    an image - it understated what the field plays. A set released before the card
+    database catches up would be invisible in the one report meant to say what you
+    will face. What they cannot join is anything derived from a card's own
+    attributes: `_cost_curve` and `_type_mix` read `entries` directly and so skip
+    them, because there is no cost or type to put in a bucket.
     """
     decks_with: Counter = Counter()
     copies: Counter = Counter()
@@ -207,6 +243,8 @@ def _tally(group: list[ResolvedDeck]) -> tuple[Counter, Counter, dict[str, Count
         per_deck: Counter = Counter()
         for card, count in item.entries:
             per_deck[card.name] += count
+        for line in item.unknown:
+            per_deck[line.name] += line.count
 
         for name, count in per_deck.items():
             copies[name] += count
@@ -731,6 +769,10 @@ def build_meta(
     for item in field:
         for card, _count in item.entries:
             card_payloads.setdefault(card.name, _card_payload(card))
+        # Unresolved names get a payload too, so a card the database is behind on
+        # still has somewhere for the page to look it up from.
+        for line in item.unknown:
+            card_payloads.setdefault(line.name, _unknown_card_payload(line.name))
 
     pairs = []
     archetype_groups: list[dict] = []

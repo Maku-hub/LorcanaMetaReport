@@ -1,24 +1,45 @@
 """Card database.
 
-Source: https://lorcana-api.com/ - free, open source, no key required. One bulk
-endpoint returns every printing, so we fetch it once and cache it on disk.
+Source: https://lorcanajson.org/ - free, no key required. One bulk file holds every
+card, so it is fetched once and cached on disk.
+
+## Why LorcanaJSON and not lorcana-api.com
+
+lorcana-api.com was the original source and was dropped in October 2026 because it
+had stopped keeping up: measured then, it carried 2694 printings across sets 1-13
+and **no set 14 at all**, while LorcanaJSON carried 3556 cards across sets 1-14 plus
+the three Illumineer's Quest sets. A card the database has never heard of is not a
+small gap - see `analyze.resolve_deck` for what a decklist does with one.
+
+An "official Ravensburger API" was considered and rejected: there is no documented
+public endpoint for it. What community projects call by that name appears to be
+whatever the official app talks to - unversioned, undocumented, with no published
+terms. This project rests on written permission and documented terms everywhere
+else, and that is not a thing to make an exception for. LorcanaJSON publishes the
+same data under Ravensburger's Community Code Policy, which is the same footing
+this project stands on, and its image URLs point at Ravensburger's own CDN anyway.
+
+Their site asks callers to prefer the zipped file to save bandwidth, so that is what
+is fetched - 1.2 MB instead of roughly 12 MB.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import time
 import unicodedata
+import zipfile
 from pathlib import Path
 
 import requests
 
 from .models import INKS, Card
 
-CARDS_URL = "https://api.lorcana-api.com/cards/all"
+CARDS_URL = "https://lorcanajson.org/files/current/en/allCards.json.zip"
 DEFAULT_CACHE = Path(".cache/cards.json")
 CACHE_TTL_SECONDS = 24 * 3600
-USER_AGENT = "lorcana-meta/0.1 (+https://github.com/)"
+USER_AGENT = "lorcana-meta/1.1 (+https://github.com/)"
 
 
 def normalize_name(name: str) -> str:
@@ -40,8 +61,14 @@ def normalize_name(name: str) -> str:
 
 
 def _parse_inks(color: str) -> tuple[str, ...]:
-    """``"Amethyst, Sapphire"`` -> ``("amethyst", "sapphire")``, in canonical order."""
-    parts = [p.strip().casefold() for p in (color or "").split(",")]
+    """``"Amethyst-Sapphire"`` -> ``("amethyst", "sapphire")``, in canonical order.
+
+    LorcanaJSON joins a dual-ink card's colours with a hyphen; the previous source
+    used a comma. Both separators are accepted because getting this wrong is silent:
+    the card keeps its name and loses its inks, and a dual-ink deck then has no ink
+    pair to be counted under.
+    """
+    parts = [p.strip().casefold() for p in (color or "").replace("-", ",").split(",")]
     inks = [p for p in parts if p in INKS]
     return tuple(sorted(set(inks), key=INKS.index))
 
@@ -114,24 +141,47 @@ class CardIndex:
             CARDS_URL, timeout=timeout, headers={"User-Agent": USER_AGENT}
         )
         response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError(f"unexpected card payload of type {type(payload).__name__}")
-        return payload
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                names = [n for n in archive.namelist() if n.endswith(".json")]
+                if not names:
+                    raise ValueError("the archive holds no .json file")
+                payload = json.loads(archive.read(names[0]).decode("utf-8"))
+        except zipfile.BadZipFile as error:
+            raise ValueError(
+                f"{CARDS_URL} did not return a zip archive - the download may have "
+                f"been truncated or replaced by an error page ({error})"
+            ) from error
+
+        cards = payload.get("cards") if isinstance(payload, dict) else None
+        if not isinstance(cards, list):
+            raise ValueError(
+                "unexpected card payload: expected an object with a 'cards' list, got "
+                f"{type(payload).__name__}"
+            )
+        return cards
 
     @staticmethod
     def _to_card(entry: dict) -> Card:
+        images = entry.get("images") or {}
+        subtypes = tuple(str(s).strip() for s in (entry.get("subtypes") or []) if s)
         return Card(
-            name=(entry.get("Name") or "").strip(),
-            inks=_parse_inks(entry.get("Color", "")),
-            cost=_as_int(entry.get("Cost")),
-            type=(entry.get("Type") or "").strip(),
-            inkable=bool(entry.get("Inkable")),
-            lore=_as_int(entry.get("Lore")),
-            strength=_as_int(entry.get("Strength")),
-            willpower=_as_int(entry.get("Willpower")),
-            text=(entry.get("Body_Text") or "").strip(),
-            image=(entry.get("Image") or "").strip(),
-            set_id=(entry.get("Set_ID") or "").strip(),
-            rarity=(entry.get("Rarity") or "").strip(),
+            # fullName is "Elsa - Snow Queen", which is how decklists spell it. name
+            # alone would be "Elsa", and several Elsas would collapse into one.
+            name=(entry.get("fullName") or entry.get("name") or "").strip(),
+            inks=_parse_inks(entry.get("color", "")),
+            cost=_as_int(entry.get("cost")),
+            type=(entry.get("type") or "").strip(),
+            subtypes=subtypes,
+            # LorcanaJSON spells this "inkwell": whether the card may be inked.
+            inkable=bool(entry.get("inkwell")),
+            lore=_as_int(entry.get("lore")),
+            strength=_as_int(entry.get("strength")),
+            willpower=_as_int(entry.get("willpower")),
+            text=(entry.get("fullText") or "").strip(),
+            # "full" is the card face; there is also a thumbnail and a foil mask.
+            image=(images.get("full") or images.get("thumbnail") or "").strip(),
+            set_id=str(entry.get("setCode") or "").strip(),
+            rarity=(entry.get("rarity") or "").strip(),
         )

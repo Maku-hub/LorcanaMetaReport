@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -97,10 +98,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     build.add_argument(
         "--top",
-        type=int,
-        default=32,
-        help="only keep decks that placed this high or better; 0 keeps everything "
-        "(default: 32)",
+        type=_parse_top,
+        default=TopCut(places=32),
+        help="only keep decks that placed this high or better. A plain number is a "
+        "number of places; a percentage is a share of each event's attendance, "
+        "rounded down - so --top 50%% keeps 15 decks from a 30-player event and 64 "
+        "from a 128-player one. 0 keeps everything (default: 32)",
     )
     build.add_argument(
         "--min-players",
@@ -231,16 +234,23 @@ _INKDECKS_RANKS = (
 )
 
 
-def _inkdecks_rank(top: int) -> str:
+def _inkdecks_rank(cut: TopCut) -> str:
     """Map --top onto the tightest server-side filter that still covers it.
 
     Letting the site do the cut means fetching 8 pages instead of 41 for a top-8
     report. Anything the filter cannot express is left to the local --top cut.
+
+    A percentage cannot be expressed here at all, and must not be approximated: the
+    site filters on placing, and 50% of a 128-player event reaches 64th place, which
+    every one of these filters would have thrown away before we ever saw it. So the
+    listing is read unfiltered and the cut is applied locally, which costs pages.
+    That case needs no branch of its own - a percentage carries no `places`, and the
+    line below already answers "no fixed number of places" with no filter.
     """
-    if not top:
+    if not cut.places:
         return ""
     for bound, name in _INKDECKS_RANKS:
-        if top <= bound:
+        if cut.places <= bound:
             return name
     return ""
 
@@ -258,16 +268,108 @@ def _build_source(args: argparse.Namespace):
             # Attendance is on the listing row, so this filters before any deck page
             # is fetched - it saves requests rather than wasting them.
             min_players=args.min_players,
+            # Same reason as min_players: the listing row carries the placing and
+            # the attendance, so a percentage cut is applied there rather than on
+            # hundreds of deck pages that would then be thrown away.
+            top_percent=args.top.percent,
             use_browser=not args.inkdecks_no_browser,
         )
     raise SourceError(f"Unknown source {args.source!r}")
 
 
-def _apply_top_cut(decks: list[Deck], top: int) -> list[Deck]:
-    """Keep the top N of each event. Decks with no recorded placing are kept."""
-    if not top:
+@dataclass(frozen=True)
+class TopCut:
+    """How much of each event to keep: a fixed number of places, or a share of it.
+
+    A fixed cut means different things at different events. "Top 32" is the whole
+    back half of a 60-player event and the top quarter of a 128-player one, so a
+    field built that way is weighted towards whoever showed up to the small events.
+    A share of attendance is the same depth everywhere.
+    """
+
+    places: int | None = None
+    percent: float | None = None
+
+    @property
+    def label(self) -> str:
+        if self.percent is not None:
+            # 50.0 reads as "50%", 12.5 keeps its half.
+            text = f"{self.percent:g}"
+            return f"{text}%"
+        return str(self.places) if self.places else "all"
+
+    def limit_for(self, players: int | None) -> int | None:
+        """The last placing to keep at an event of this size. None keeps everything.
+
+        Rounds down, so 50% of 31 players keeps 15 - a player on the bubble is
+        outside the cut rather than inside it. Rounding up would quietly make the
+        cut shallower than asked for at every odd-sized event.
+        """
+        if self.percent is None:
+            return self.places or None
+        if not players:
+            return None  # unknown attendance: no share of it can be computed
+        return int(players * self.percent / 100.0)
+
+
+def _parse_top(value: str) -> TopCut:
+    """``"32"`` -> 32 places; ``"50%"`` -> half of each event's attendance."""
+    text = (value or "").strip()
+    if text.endswith("%"):
+        try:
+            percent = float(text[:-1].replace(",", "."))
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{value!r} is not a percentage; try --top 50%"
+            ) from None
+        if not 0 < percent <= 100:
+            raise argparse.ArgumentTypeError(
+                f"--top {value} is outside 0-100%; 100% keeps every placed deck"
+            )
+        return TopCut(percent=percent)
+
+    try:
+        places = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is neither a number of places nor a percentage"
+        ) from None
+    if places < 0:
+        raise argparse.ArgumentTypeError("--top cannot be negative")
+    return TopCut(places=places)
+
+
+def _apply_top_cut(decks: list[Deck], cut: TopCut) -> list[Deck]:
+    """Keep the top of each event. Decks with no recorded placing are kept.
+
+    With a percentage the limit is computed per event, so a 30-player event and a
+    128-player one are cut to the same depth rather than the same number.
+
+    Two kinds of deck survive the cut untouched, both on the standing rule the rest
+    of this file follows: we do not discard what we cannot judge. A deck with no
+    placing is kept, and so is one whose event size was never recorded - there is no
+    attendance to take a share of. `cmd_build` reports how many of each there were,
+    so a cut that could not be applied is visible rather than assumed.
+    """
+    if cut.percent is None and not cut.places:
         return decks
-    return [d for d in decks if d.standing is None or d.standing <= top]
+
+    kept = []
+    for deck in decks:
+        if deck.standing is None:
+            kept.append(deck)
+            continue
+        limit = cut.limit_for(deck.tournament_players)
+        if limit is None or deck.standing <= limit:
+            kept.append(deck)
+    return kept
+
+
+def _unjudgeable_by_cut(decks: list[Deck], cut: TopCut) -> int:
+    """Decks the cut could not be applied to, because their event size is unknown."""
+    if cut.percent is None:
+        return 0
+    return sum(1 for d in decks if d.standing is not None and not d.tournament_players)
 
 
 def _apply_min_players(decks: list[Deck], minimum: int | None) -> list[Deck]:
@@ -370,8 +472,18 @@ def cmd_build(args: argparse.Namespace) -> int:
     decks = source.fetch(start, end)
     log.info("fetched %d decklists", len(decks))
 
+    unjudgeable = _unjudgeable_by_cut(decks, args.top)
     decks = _apply_top_cut(decks, args.top)
-    log.info("%d decklists after the top-%s cut", len(decks), args.top or "all")
+    log.info("%d decklists after the top-%s cut", len(decks), args.top.label)
+    if unjudgeable:
+        # A share of an unknown attendance is not computable, so these were kept.
+        # Saying so beats a field that is quietly deeper at some events than others.
+        log.warning(
+            "%d decklist(s) come from events with no recorded attendance, so the "
+            "top-%s cut could not be applied to them and they were kept",
+            unjudgeable,
+            args.top.label,
+        )
 
     # A source may already have filtered this out - inkdecks does, before fetching -
     # so this is the backstop that makes the rule hold for every source.
@@ -417,7 +529,12 @@ def cmd_build(args: argparse.Namespace) -> int:
             # silently ignored by the default source - a flag that looks like it does
             # something and does not.
             "format": getattr(source, "fmt", None) or args.fmt or DEFAULT_FORMAT,
-            "top": args.top,
+            # `top` stays the number of places so anything doing arithmetic on it
+            # keeps working and old reports still read. A percentage cut has no
+            # single number - it is a different depth at every event - so it travels
+            # separately, and the page shows whichever of the two is set.
+            "top": args.top.places,
+            "top_percent": args.top.percent,
             "min_players": args.min_players,
             "min_pair_decks": args.min_pair_decks,
         },

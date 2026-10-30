@@ -96,7 +96,7 @@ instead.
 The same command everywhere (example usage):
 
 ```
-lorcana-meta build --last 14 --top 16 --min-players 32 --min-pair-decks 1 --refresh-cards --inkdecks-consent
+lorcana-meta build --last 14 --top 50% --min-players 24 --inkdecks-consent
 ```
 
 Open `report.html`. No server, no hosting, nothing leaves your machine.
@@ -124,7 +124,7 @@ lorcana-meta build [options]
 | `--source {inkdecks,local}` | `inkdecks` | Where decklists come from. `local` reads `data/decks/*.{json,txt}` instead of fetching anything — see [`data/decks/README.md`](data/decks/README.md) for the format. |
 | `--last N` | `30` | Days back from today. |
 | `--start` / `--end` | – | Explicit window, `YYYY-MM-DD`. Overrides `--last`. |
-| `--top N` | `32` | Keep finishes this high or better. `0` keeps everything. |
+| `--top N` or `--top P%` | `32` | Keep finishes this high or better. A number is a number of places; a percentage is a share of each event's attendance, rounded down — `--top 50%` keeps 15 decks from a 30-player event and 64 from a 128-player one. `0` keeps everything. A percentage cannot use inkdecks' own placing filter, so the listing is read in full — but the cut is then applied to the listing, before any decklist is fetched. |
 | `--min-players N` | – | Ignore smaller events. For inkdecks it filters on the listing row, so those deck pages are never requested. Decks whose event size is unknown are kept. |
 | `--min-pair-decks N` | `3` | Drop ink pairs thinner than this as noise. The count is still reported. |
 | `--cluster-threshold F` | `0.60` | Card overlap that counts as the same archetype. Lower merges more, higher splits more. |
@@ -174,8 +174,14 @@ and a session that is read-only by construction. Their deck pages also sit behin
 Cloudflare challenge: a browser answers it once, and the cookie it earns carries the
 rest of the crawl over the ordinary client. `--inkdecks-no-browser` turns that off.
 
-**Card data:** [lorcana-api.com](https://lorcana-api.com/) — free, no key. One bulk
-endpoint cached for 24 hours, supplying card text, cost, inks, type and images.
+**Card data:** [LorcanaJSON](https://lorcanajson.org/) — free, no key. One bulk file
+cached for 24 hours, supplying card text, cost, inks, type and images. Sets 1–14 plus
+the Illumineer's Quest sets; the images come from Ravensburger's own CDN.
+
+A card the database does not have yet — normally a set released days ago — is still
+counted and listed, marked **new**, because how often it turns up is read from the
+decklists themselves. Only its printed details are missing, so it sits outside the
+cost curve and the type mix.
 
 ---
 

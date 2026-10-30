@@ -61,6 +61,63 @@ def test_normalize():
     check(normalize_name("  MICKEY   MOUSE  ") == "mickey mouse", "case and spacing fold")
 
 
+def test_card_source_mapping():
+    """The LorcanaJSON shape, mapped onto our Card.
+
+    Two of these are silent failures, which is why they are pinned. A dual-ink card
+    whose colours do not parse keeps its name and loses its inks, so the deck running
+    it has no ink pair to be counted under. And songs moved: the old source wrote
+    "Action - Song" into the type, this one puts Song in subtypes, so `is_song`
+    reading the type alone would quietly classify every song as a plain action.
+    """
+    from lorcana_meta.cards import _parse_inks
+
+    check(_parse_inks("Amethyst-Sapphire") == ("amethyst", "sapphire"), "hyphen splits")
+    check(_parse_inks("Amethyst, Sapphire") == ("amethyst", "sapphire"), "comma still splits")
+    check(_parse_inks("Steel-Amber") == ("amber", "steel"), "canonical order, not given order")
+    check(_parse_inks("") == (), "no colour is no inks, not a crash")
+    check(_parse_inks("Rainbow") == (), "an unknown colour is dropped")
+
+    song = CardIndex._to_card(
+        {
+            "fullName": "Be Our Guest",
+            "name": "Be Our Guest",
+            "color": "Amber",
+            "cost": 2,
+            "type": "Action",
+            "subtypes": ["Song"],
+            "inkwell": True,
+            "rarity": "Uncommon",
+            "setCode": "1",
+            "images": {"full": "https://example/full.jpg", "thumbnail": "https://example/t.jpg"},
+            "fullText": "Gain 1 lore.",
+        }
+    )
+    check(song.is_song, "a Song subtype makes it a song")
+    check(song.base_type == "Action", f"while its base type stays Action: {song.base_type}")
+    check(song.inkable is True, "'inkwell' maps to inkable")
+    check(song.image == "https://example/full.jpg", f"prefers the full image: {song.image}")
+    check(song.set_id == "1", f"set code carried as text: {song.set_id!r}")
+
+    character = CardIndex._to_card(
+        {
+            "fullName": "Elsa - Snow Queen",
+            "name": "Elsa",
+            "color": "Amethyst-Sapphire",
+            "cost": 8,
+            "type": "Character",
+            "subtypes": ["Floodborn", "Queen"],
+            "inkwell": False,
+            "images": {"thumbnail": "https://example/t.jpg"},
+        }
+    )
+    check(character.name == "Elsa - Snow Queen", f"fullName wins over name: {character.name}")
+    check(character.inks == ("amethyst", "sapphire"), f"dual ink: {character.inks}")
+    check(not character.is_song, "a character is not a song")
+    check(character.inkable is False, "uninkable stays uninkable")
+    check(character.image == "https://example/t.jpg", "falls back to the thumbnail")
+
+
 # ------------------------------------------------------------- decklist parsing
 
 def test_decklist_text():
@@ -151,6 +208,106 @@ def test_resolve_reports_unknowns():
         f"unknown recorded: {anomalies.unknown_cards}",
     )
     check(len(resolved.unknown) == 1, "unknown kept on the deck")
+
+
+def test_a_card_outside_the_database_is_still_counted():
+    """A just-released set must not be invisible in the report about what you face.
+
+    These used to be dropped entirely: `resolve_deck` collected them and nothing
+    downstream ever read the list, so a card the database had not caught up with
+    vanished from the card tables, the threat board and the movement column. The
+    report then understated the field while looking complete.
+
+    What it still may not join is anything derived from a card's own attributes.
+    There is no cost to bucket and no type to group by, so the cost curve and the
+    type mix have to leave it out rather than invent a zero.
+    """
+    from lorcana_meta.analyze import _card_stats_for, _cost_curve, _tally, _type_mix
+
+    index = _index()
+    anomalies = Anomalies()
+    decks = []
+    for i in range(4):
+        decks.append(
+            resolve_deck(
+                Deck(
+                    source="test",
+                    deck_id=str(i),
+                    player=f"P{i}",
+                    cards=[
+                        DeckCard("Elsa - Snow Queen", 30),
+                        DeckCard("Hades - Lord of the Underworld", 26),
+                        DeckCard("Brand New Card - From Set 14", 4),
+                    ],
+                ),
+                index,
+                anomalies,
+            )
+        )
+
+    decks_with, copies, _spread = _tally(decks)
+    check(
+        decks_with["Brand New Card - From Set 14"] == 4,
+        f"counted in every deck that runs it: {decks_with}",
+    )
+    check(copies["Brand New Card - From Set 14"] == 16, f"copies counted: {copies}")
+
+    names = {row["name"]: row for row in _card_stats_for(decks)}
+    row = names.get("Brand New Card - From Set 14")
+    check(row is not None, f"listed in the card table: {sorted(names)}")
+    check(row and row["inclusion"] == 100.0, f"with its inclusion: {row}")
+    check(row and row["typical_copies"] == 4, f"and its copy count: {row}")
+
+    curve_total = sum(b["avg_cards"] for b in _cost_curve(decks))
+    check(
+        abs(curve_total - 56.0) < 0.01,
+        f"the cost curve holds only the 56 resolved cards, not 60: {curve_total}",
+    )
+    mix = {e["type"] for e in _type_mix(decks)}
+    check("" not in mix and "Other" not in mix, f"no blank type bucket: {mix}")
+
+    # Through a real build, not the payload helper: the page decides what to show
+    # from this flag, and a helper that returns the right dict into nothing would
+    # pass a direct test while the report shipped the card as though it were known.
+    from lorcana_meta.analyze import build_meta
+
+    report = build_meta(
+        [item.deck for item in decks],
+        index,
+        period={"start": "2026-10-01", "end": "2026-10-30", "days": 30},
+        source={
+            "name": "test",
+            "attribution": "test",
+            "attribution_url": "",
+            "publishable": True,
+            "skipped_decks": 0,
+            "card_db": "test",
+        },
+        filters={
+            "format": "Core Constructed",
+            "top": 32,
+            "min_players": None,
+            "min_pair_decks": 1,
+        },
+        generated_at="now",
+        built_by={},
+        cluster_threshold=0.6,
+        min_pair_decks=1,
+    )
+    payload = report["cards"].get("Brand New Card - From Set 14")
+    check(payload is not None, "the report ships a payload for it")
+    check(
+        payload and payload["in_database"] is False,
+        f"flagged as outside the card database: {payload}",
+    )
+    check(
+        report["cards"]["Elsa - Snow Queen"]["in_database"] is True,
+        "while a card the database has is flagged as known",
+    )
+    check(
+        any(t["name"] == "Brand New Card - From Set 14" for t in report["threats"]),
+        "and it reaches the threat board",
+    )
 
 
 def test_resolve_drops_truncated_lists():
@@ -339,16 +496,80 @@ def test_min_players_drops_small_events_and_keeps_unknown_ones():
 
 
 def test_top_cut_keeps_decks_with_no_recorded_placing():
-    from lorcana_meta.cli import _apply_top_cut
+    from lorcana_meta.cli import TopCut, _apply_top_cut
 
     decks = [
         Deck(source="t", deck_id="won", player="P", standing=1),
         Deck(source="t", deck_id="deep", player="P", standing=40),
         Deck(source="t", deck_id="unplaced", player="P", standing=None),
     ]
-    kept = [d.deck_id for d in _apply_top_cut(decks, 32)]
+    kept = [d.deck_id for d in _apply_top_cut(decks, TopCut(places=32))]
     check(kept == ["won", "unplaced"], f"the 40th is cut, the unknown is kept: {kept}")
-    check(len(_apply_top_cut(decks, 0)) == 3, "top 0 keeps everything")
+    check(len(_apply_top_cut(decks, TopCut(places=0))) == 3, "top 0 keeps everything")
+
+
+def test_top_cut_as_a_share_of_attendance():
+    """`--top 50%` is the same depth at every event, which a fixed number is not.
+
+    A fixed cut means something different at each event: "top 32" is the back half of
+    a 60-player event and the top quarter of a 128-player one, so a field built that
+    way leans towards whoever turned up to the small events.
+    """
+    from lorcana_meta.cli import _apply_top_cut, _parse_top
+
+    half = _parse_top("50%")
+    check(half.percent == 50.0 and half.places is None, f"parsed as a share: {half}")
+    check(half.label == "50%", f"and says so: {half.label}")
+
+    # Rounds down, including on the odd sizes where it actually matters.
+    check(half.limit_for(30) == 15, "50% of 30 is 15")
+    check(half.limit_for(31) == 15, "50% of 31 rounds down to 15, not up to 16")
+    check(half.limit_for(128) == 64, "and scales to the big events")
+    check(_parse_top("10%").limit_for(24) == 2, "10% of 24 is 2")
+    check(half.limit_for(None) is None, "unknown attendance has no share to take")
+
+    decks = [
+        Deck(source="t", deck_id="small-2", player="P", standing=2, tournament_players=24),
+        Deck(source="t", deck_id="small-13", player="P", standing=13, tournament_players=24),
+        Deck(source="t", deck_id="big-13", player="P", standing=13, tournament_players=128),
+        Deck(source="t", deck_id="no-size", player="P", standing=50, tournament_players=None),
+        Deck(source="t", deck_id="unplaced", player="P", standing=None, tournament_players=24),
+    ]
+    kept = [d.deck_id for d in _apply_top_cut(decks, half)]
+    check(
+        "small-13" not in kept,
+        f"13th of 24 is outside half the field: {kept}",
+    )
+    check(
+        "big-13" in kept,
+        f"while 13th of 128 is comfortably inside it - the same placing, judged "
+        f"against its own event: {kept}",
+    )
+    check("no-size" in kept and "unplaced" in kept, f"what cannot be judged is kept: {kept}")
+
+
+def test_top_percent_is_validated_and_never_cuts_server_side():
+    """A percentage the site cannot express must not be approximated into one.
+
+    inkdecks filters on placing, and 50% of a 128-player event reaches 64th - which
+    every one of its rank filters would have discarded before we saw it. Asking for
+    the wrong filter here loses the decks silently, upstream of any local cut.
+    """
+    import argparse
+
+    from lorcana_meta.cli import TopCut, _inkdecks_rank, _parse_top
+
+    check(_inkdecks_rank(TopCut(places=8)) == "top8", "a fixed cut still uses the site")
+    check(_inkdecks_rank(_parse_top("50%")) == "", "a share reads the listing unfiltered")
+    check(_inkdecks_rank(TopCut(places=0)) == "", "and so does keeping everything")
+
+    for bad in ("abc", "-1", "0%", "101%", "%"):
+        try:
+            _parse_top(bad)
+            FAILURES.append(f"--top {bad!r} should be rejected")
+        except argparse.ArgumentTypeError:
+            pass
+    check(_parse_top("12.5%").label == "12.5%", "a fractional share keeps its half")
 
 
 # --------------------------------------------------------- copy distribution

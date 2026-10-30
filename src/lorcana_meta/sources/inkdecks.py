@@ -371,6 +371,7 @@ class InkdecksSource:
         cache_dir: Path | str = ".cache/inkdecks",
         max_decks: int | None = 1500,
         min_players: int | None = None,
+        top_percent: float | None = None,
         user_agent: str | None = None,
         timeout: int = 45,
         use_browser: bool = True,
@@ -408,6 +409,11 @@ class InkdecksSource:
         self.skipped: list[str] = []
         self.max_decks = max_decks
         self.min_players = min_players
+        #: A placing cut expressed as a share of each event's attendance. The site's
+        #: own rank filter cannot express it, but the listing row carries both the
+        #: placing and the attendance, so it is applied here instead of after the
+        #: fetch - see `_fetch_index`.
+        self.top_percent = top_percent
         self.timeout = timeout
         #: Whether a Cloudflare challenge may be answered by opening a browser.
         self.use_browser = use_browser
@@ -469,6 +475,24 @@ class InkdecksSource:
                     before - len(stubs),
                     before,
                     self.min_players,
+                )
+
+        # And the same for a percentage placing cut, for exactly the same reason.
+        # The site's rank filter works on placings and cannot express a share, so
+        # the listing arrives unfiltered - but the row carries the placing and the
+        # attendance, which is everything the cut needs. Leaving it to the caller
+        # meant fetching hundreds of deck pages and discarding most of them, which
+        # is both slow and a lot of traffic aimed at someone else's server.
+        if self.top_percent:
+            before = len(stubs)
+            stubs = [s for s in stubs if self._inside_share(s)]
+            if before != len(stubs):
+                log.info(
+                    "inkdecks: %d of %d decks placed outside the top %g%% of their "
+                    "event - not fetching them",
+                    before - len(stubs),
+                    before,
+                    self.top_percent,
                 )
 
         # Always best-placed first, not only when trimming. The site's rate limit is
@@ -545,6 +569,19 @@ class InkdecksSource:
                 ", ".join(self.skipped[:10]) + (" ..." if len(self.skipped) > 10 else ""),
             )
         return decks
+
+    def _inside_share(self, stub: dict) -> bool:
+        """Did this listing row place inside the top `top_percent` of its event?
+
+        Rounds down, matching the cut the CLI applies afterwards - the two have to
+        agree or this would drop rows the report would have kept. Anything that
+        cannot be judged is kept and left to that second pass: a row with no placing
+        or no attendance is not evidence of a deep finish.
+        """
+        standing, players = stub.get("standing"), stub.get("players")
+        if not standing or not players:
+            return True
+        return standing <= int(players * self.top_percent / 100.0)
 
     def _fetch_index(self, start: date, end: date) -> list[dict]:
         segment = CATEGORIES[self.category]

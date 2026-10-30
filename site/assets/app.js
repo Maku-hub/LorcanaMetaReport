@@ -118,6 +118,19 @@ function cardButton(name) {
   return `<button type="button" data-card="${esc(name)}">${esc(name)}</button>`;
 }
 
+/**
+ * Marks a card the card database does not have yet, wherever it is listed.
+ *
+ * Its counts are real - they come from the decklists - so it belongs in the table
+ * like any other card. What it lacks is the printed detail, and a reader comparing
+ * a row with no cost and no ink chips against its neighbours deserves to be told
+ * why rather than left to assume the report is broken.
+ */
+function newCardBadge(info) {
+  if (!info || info.in_database !== false) return "";
+  return '<span class="badge" title="Not in the card database yet, so no cost, inks or image. The counts are from the decklists and are unaffected.">new</span>';
+}
+
 /* ------------------------------------------------------- chart components */
 
 /**
@@ -385,16 +398,29 @@ function activeCut() {
  * Calling it "match win rate" invited exactly the wrong reading: a pair at 55.6% here
  * wins 36% of its games in the field. The label now names the sample.
  */
+/**
+ * How deep the placing cut went, as a reader would say it.
+ *
+ * A percentage cut has no single number of places - it is 15 at a 30-player event
+ * and 64 at a 128-player one - so it is shown as the share it was asked for.
+ * Returns "" when nothing was cut, which every caller already treats as "all".
+ */
+function topLabel() {
+  const filters = state.meta.filters || {};
+  if (filters.top_percent) return `${num(filters.top_percent)}%`;
+  return filters.top ? num(filters.top) : "";
+}
+
 function winRateLabel() {
-  const top = state.meta.filters.top;
-  return top ? `Win rate, top-${num(top)} lists` : "Win rate, placed lists";
+  const top = topLabel();
+  return top ? `Win rate, top-${top} lists` : "Win rate, placed lists";
 }
 
 /** The caveat that has to travel with it wherever it is prominent. */
 function winRateNote() {
-  const top = state.meta.filters.top;
+  const top = topLabel();
   return `Every list here finished inside the${
-    top ? ` top ${num(top)}` : " fetched"
+    top ? ` top ${top}` : " fetched"
   } cut, so these are win rates among decks that already placed - all of them high,
   and closer together than the field really is. Read them against each other, never as
   how often a deck wins.`;
@@ -458,7 +484,7 @@ function cutNote(cut) {
   parts.push(winRateNote());
   parts.push(
     `Everything here is conditional on making the fetched cut${
-      state.meta.filters.top ? ` of top ${num(state.meta.filters.top)}` : ""
+      topLabel() ? ` of top ${topLabel()}` : ""
     } in the first place - this is which of the decks already doing well go furthest,
      not a win rate against a whole tournament.`
   );
@@ -903,7 +929,7 @@ function renderOverview() {
       ${num(totals.decks)} decklists from ${num(totals.tournaments)} ${esc(
         filters.format
       )} events between ${esc(period.start)} and ${esc(period.end)}${
-        filters.top ? `, top ${filters.top} finishes only` : ""
+        topLabel() ? `, top ${topLabel()} finishes only` : ""
       }.
     </p>
     ${kpis}
@@ -946,7 +972,7 @@ function caveats() {
   }
   if (anomalies.unknown_card_count) {
     notes.push(
-      `${num(anomalies.unknown_card_count)} card name(s) in the source lists could not be matched to a printing and are missing from the card stats.`
+      `${num(anomalies.unknown_card_count)} card name(s) could not be matched to a printing — usually a just-released set. They are counted and listed like any other card, marked "new"; only their cost, inks, type and image are missing, so they sit outside the cost curve and the type mix.`
     );
   }
   if (!notes.length) return "";
@@ -1085,7 +1111,7 @@ function renderPair(arg) {
                       return `<tr>
                         <td class="name"><div class="card-name">${inkPairChips(
                           info.inks || []
-                        )}${cardButton(card.name)}</div></td>
+                        )}${cardButton(card.name)}${newCardBadge(info)}</div></td>
                         <td class="num">${num(info.cost)}</td>
                         <td>${meter(card.inclusion, 100, pct(card.inclusion, 0))}</td>
                         <td class="num"><b>${num(card.typical_copies)}×</b></td>
@@ -1330,7 +1356,9 @@ function renderThreats() {
                       (threat) => `<tr>
                         <td class="name"><div class="card-name">${inkPairChips(
                           threat.inks
-                        )}${cardButton(threat.name)}</div></td>
+                        )}${cardButton(threat.name)}${newCardBadge(
+                        state.meta.cards[threat.name] || {}
+                      )}</div></td>
                         <td class="num">${num(threat.cost)}</td>
                         <td>${meter(
                           threat.expected_copies,
@@ -1440,7 +1468,7 @@ function renderAbout() {
         <div class="card__head"><h2>Method</h2></div>
         <p class="subtitle">
           Tournament standings and the decklists attached to them are pulled for a date window, cut
-          to the top ${esc(meta.filters.top || "all")} finishes of each event, and grouped by the two
+          to the top ${topLabel() || "all"} finishes of each event, and grouped by the two
           inks each list is built on. Card names are matched against a public card database; a list
           that cannot be read is dropped rather than guessed at.
         </p>
@@ -1449,7 +1477,7 @@ function renderAbout() {
             meta.period.end
           )} (${num(meta.period.days)} days)</td></tr>
           <tr><td>Format</td><td class="num">${esc(meta.filters.format)}</td></tr>
-          <tr><td>Placing cut</td><td class="num">top ${esc(meta.filters.top || "all")}</td></tr>
+          <tr><td>Placing cut</td><td class="num">top ${topLabel() || "all"}</td></tr>
           <tr><td>Event size floor</td><td class="num">${
             meta.filters.min_players ? `${num(meta.filters.min_players)} players` : "none"
           }</td></tr>
@@ -1502,7 +1530,7 @@ function renderAbout() {
           </li>
           <li>
             The results cuts are conditional on making the fetched cut${
-              meta.filters.top ? ` of top ${num(meta.filters.top)}` : ""
+              topLabel() ? ` of top ${topLabel()}` : ""
             }: they say which of the decks already doing well went furthest, not how
             often a deck wins against a whole tournament.
           </li>
@@ -1662,16 +1690,24 @@ function cardPosition(name) {
 function inspectCard(name) {
   const info = state.meta.cards[name];
   if (!info) return null;
-  const badges = [
-    info.cost !== null ? `${info.cost} ink` : "",
-    info.type,
-    info.inkable ? "inkable" : "uninkable",
-    info.lore !== null && info.lore !== undefined ? `${info.lore} lore` : "",
-    info.strength !== null && info.willpower !== null && info.strength !== undefined
-      ? `${info.strength}/${info.willpower}`
-      : "",
-    info.rarity,
-  ].filter(Boolean);
+  // A card the database has not caught up with keeps its field figures - how often
+  // it turns up and in how many copies is counted from the decklists themselves, and
+  // that is the part this report exists for. Its printed attributes are another
+  // matter: none are known, so none are shown. Rendering them anyway would put
+  // "uninkable" on a card nobody has checked, which is worse than a blank.
+  const unknown = info.in_database === false;
+  const badges = unknown
+    ? []
+    : [
+        info.cost !== null ? `${info.cost} ink` : "",
+        info.type,
+        info.inkable ? "inkable" : "uninkable",
+        info.lore !== null && info.lore !== undefined ? `${info.lore} lore` : "",
+        info.strength !== null && info.willpower !== null && info.strength !== undefined
+          ? `${info.strength}/${info.willpower}`
+          : "",
+        info.rarity,
+      ].filter(Boolean);
 
   const position = cardPosition(name);
   const meta = !position
@@ -1711,17 +1747,46 @@ function inspectCard(name) {
         )
         .join("")}</div>`;
 
+  // Cost, type, inkable, lore, strength, rarity and the rules text are all printed
+  // on the card, and the card is right there - repeating them underneath is reading
+  // the picture out loud. So they are a fallback, not content: rendered hidden when
+  // there is an image, and revealed only if it never arrives.
+  //
+  // Which happens. The offline single file loads card art from Ravensburger's CDN,
+  // so every image is missing when you open the report on a train - and that file is
+  // the only way to read a private report. Deleting these outright would have been
+  // tidy on screen and would have gutted the copy that matters most.
+  const printed = [
+    badges.length
+      ? `<div class="inspector__meta">${badges
+          .map((b) => `<span class="badge">${esc(b)}</span>`)
+          .join("")}</div>`
+      : "",
+    info.text ? `<div class="inspector__text">${esc(info.text)}</div>` : "",
+  ].join("");
+
+  const showsImage = Boolean(info.image);
+  const fallback = printed
+    ? `<div class="inspector__printed"${showsImage ? " hidden" : ""}>${printed}</div>`
+    : "";
+
   return `
     ${
-      info.image
-        ? `<img src="${esc(info.image)}" alt="${esc(name)}" loading="lazy" />`
+      showsImage
+        ? `<img src="${esc(info.image)}" alt="${esc(name)}" loading="lazy"
+             onerror="this.hidden=true;var p=this.parentNode.querySelector('.inspector__printed');if(p)p.hidden=false;" />`
         : ""
     }
     <div class="card__head" style="margin-top:10px"><h2>${esc(name)}</h2></div>
-    <div class="inspector__meta">${badges
-      .map((b) => `<span class="badge">${esc(b)}</span>`)
-      .join("")}</div>
-    ${info.text ? `<div class="inspector__text">${esc(info.text)}</div>` : ""}
+    ${
+      unknown
+        ? `<p class="subtitle">Not in the card database yet — usually a just-released
+           set. Everything below is counted from the decklists themselves, so it is
+           as reliable as any other card here; only the printed details and the
+           image are missing.</p>`
+        : ""
+    }
+    ${fallback}
     ${meta}`;
 }
 

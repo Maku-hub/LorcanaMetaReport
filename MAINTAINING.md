@@ -37,6 +37,40 @@ needs no npm packages. `test_inkdecks.py --live` hits the real site and needs
 
 ## Hard rules
 
+**A percentage `--top` is cut per event, and never server-side.** `TopCut.limit_for`
+takes a share of that event's own attendance and rounds **down**, so 50% of 31 players
+is 15 — the bubble is outside the cut, not inside it. Rounding up would quietly make
+every odd-sized event shallower than asked for. inkdecks' rank filter cannot express a
+share: it filters on placing, and 50% of a 128-player event reaches 64th, which every
+one of those filters would discard before we saw it — so `_inkdecks_rank` returns no
+filter and the listing is read in full. **The cut is then applied to the listing, not
+after the fetch**, next to the `--min-players` filter and for the same reason: the row
+already carries the placing and the attendance. Getting this wrong once cost 310
+pointless deck-page requests on a single week's window (333 fetched where 23 were
+wanted). Decks whose event size was never recorded are
+kept and counted in a warning, on the same rule as an unknown placing: do not discard
+what you cannot judge, but say that you could not judge it.
+
+**A card the database lacks is still counted, and still decides archetypes.** `_tally`
+and `cluster.deck_counts` both read `ResolvedDeck.unknown` alongside `entries`, so an
+unmatched name reaches the card tables, the threat board, the movement column and the
+similarity vector, under the name the decklist used, flagged `in_database: false`.
+These used to be dropped silently. That understated the field whenever a set landed
+before the card database caught up, and it was worse than it sounds in clustering: two
+lists sharing only an old shell scored 1.00 against each other, so a new archetype
+built from new cards was absorbed into the old one and the report stated a confident
+share for what were really two decks.
+
+What they must stay out of is anything derived from a card's own attributes —
+`_cost_curve` and `_type_mix` read `entries` directly, and a missing cost is not a zero.
+
+The known limit: these are keyed on the raw decklist spelling, not a canonical name,
+because there is no database entry to canonicalise against. Both readers use the same
+raw name, so they agree with each other; but if one source ever spelled the same new
+card two ways, it would read as two cards and *understate* similarity. One source with
+one template makes that theoretical today. Collapsing spellings would need a canonical
+name chosen per field — do not add it until a real report shows the problem.
+
 **Never publish a report built from inkdecks data.** Permission is personal use only.
 The source sets `publishable = False`, which travels into the report and makes
 `check_report.py` fail. Do not weaken that chain, and do not add a workflow that
@@ -159,8 +193,15 @@ hold no pairing data of our own at any grain.
 
 **No card prices.** Cardmarket's terms prohibit automated collection and their official
 API needs registered credentials; scraping it would be exactly the widening the
-curl_cffi rule forbids. lorcana-api.com carries no prices. A deck price is also not a
-sum of trend prices — multiple printings, languages and conditions per card.
+curl_cffi rule forbids. The card database carries no prices. A deck price is also not
+a sum of trend prices — multiple printings, languages and conditions per card.
+
+**No "official Ravensburger API".** Looked for in October 2026 and not found: there is
+no documented public endpoint. What community projects call by that name appears to be
+whatever the official app talks to — unversioned, undocumented, no published terms.
+Everything else here rests on written permission and documented terms, and this is not
+the place to make an exception. LorcanaJSON publishes the same data under Ravensburger's
+Community Code Policy, and its image URLs point at Ravensburger's CDN anyway.
 
 **No importing inkdecks' win rates.** It would put a second win rate, at a coarser
 grain, from a different source, beside ours — two definitions of one name. Its

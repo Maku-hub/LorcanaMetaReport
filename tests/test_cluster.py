@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from lorcana_meta.cluster import (  # noqa: E402
     cluster_decks,
+    deck_counts,
     deck_names,
     label_for,
     signature_cards,
@@ -65,6 +66,15 @@ def deck(name, cards: dict, standing=1, deck_id=None):
         entries=entries,
         inks=("amber", "steel"),
     )
+
+
+def unresolved_deck(name, known: dict, fresh: dict, standing=1):
+    """A deck where some lines never matched the card database."""
+    from lorcana_meta.models import DeckCard
+
+    item = deck(name, known, standing=standing)
+    item.unknown = [DeckCard(n, c) for n, c in fresh.items()]
+    return item
 
 
 def spread(names, copies=4):
@@ -242,6 +252,47 @@ def test_signature_ordering_prefers_characters_then_cost():
         names.index("Big Threat") < names.index("Cheap Guy"),
         f"the expensive character outranks the cheap one: {names}",
     )
+
+
+def test_cards_outside_the_database_decide_archetypes_too():
+    """A new set's cards are evidence about which deck a list is.
+
+    This is the case the whole thing turns on. When a set lands, its cards are the
+    newest thing in every list and the database is the last to hear about them. If
+    they count for nothing, two lists that share nothing but an old shell look
+    identical, and a genuinely new archetype is absorbed into the old one - the
+    report then states a confident share for what is really two different decks.
+    """
+    shared_shell = spread(CORE[:7])  # 28 cards both lists have in common
+
+    # Same shell, but each pilot's new cards are entirely different. Without the
+    # unresolved lines these two are indistinguishable.
+    a = unresolved_deck("a", shared_shell, {f"New A{i}": 4 for i in range(8)})
+    b = unresolved_deck("b", shared_shell, {f"New B{i}": 4 for i in range(8)})
+    check(
+        similarity(deck_counts(a), deck_counts(b)) < 0.6,
+        f"different new cards pull them apart: {similarity(deck_counts(a), deck_counts(b)):.2f}",
+    )
+    check(
+        similarity(dict(spread(CORE[:7])), dict(spread(CORE[:7]))) == 1.0,
+        "while the shells alone would have called them the same deck",
+    )
+
+    # Same shell and the same new cards: still one archetype.
+    c = unresolved_deck("c", shared_shell, {f"New A{i}": 4 for i in range(8)})
+    check(
+        similarity(deck_counts(a), deck_counts(c)) == 1.0,
+        f"sharing the new cards keeps them together: {similarity(deck_counts(a), deck_counts(c))}",
+    )
+
+    # And they reach clustering, not just the similarity helper.
+    clusters = cluster_decks([a, b, c])
+    check(len(clusters) == 2, f"two archetypes, not one: {len(clusters)}")
+    sizes = sorted(len(cl.members) for cl in clusters)
+    check(sizes == [1, 2], f"a and c together, b apart: {sizes}")
+
+    counts = deck_counts(a)
+    check(counts["New A0"] == 4, f"counted under the name the decklist used: {counts}")
 
 
 def main() -> int:

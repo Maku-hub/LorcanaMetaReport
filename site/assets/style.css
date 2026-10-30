@@ -752,6 +752,13 @@ td.name {
   background: var(--surface-2);
 }
 
+/* `display: block` above beats the hidden attribute's own styling, so a card image
+   that fails to load would stay on screen as a broken-image icon. It hides itself
+   when that happens and the printed details take its place - see inspectCard. */
+.inspector img[hidden] {
+  display: none;
+}
+
 .inspector__close {
   position: absolute;
   top: 8px;

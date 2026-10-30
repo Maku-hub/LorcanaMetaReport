@@ -374,6 +374,101 @@ def test_small_events_are_filtered_before_any_deck_page_is_fetched():
     check(sorted(kept) == ["big", "edge", "unknown"], f"three decks through: {kept}")
 
 
+def test_a_percentage_cut_is_applied_before_any_deck_page_is_fetched():
+    """Same saving, same reason - and this one was measured the hard way.
+
+    The site's rank filter works on placings and cannot express a share, so the
+    listing arrives unfiltered. Leaving the cut to the caller meant fetching every
+    listed deck and discarding most of them afterwards. On a real week - 435 listed,
+    333 past the size floor - a 10% cut needed 23 deck pages and was fetching 333:
+    310 pointless requests at a few seconds each, aimed at someone else's server.
+
+    The listing row carries the placing and the attendance, which is all the cut
+    needs, so it belongs here next to the size filter.
+    """
+    from datetime import date
+
+    from lorcana_meta.models import DeckCard
+
+    source = isolated(delay=0.5, top_percent=10.0)
+    source._fetch_index = lambda start, end: [
+        # 10% of 144 is 14, so 12th is in and 20th is out.
+        {"deck_id": "big-12", "deck_name": "a", "path": "/a", "standing": 12, "players": 144},
+        {"deck_id": "big-20", "deck_name": "b", "path": "/b", "standing": 20, "players": 144},
+        # 10% of 36 is 3, so the same 12th place is nowhere near it here.
+        {"deck_id": "small-12", "deck_name": "c", "path": "/c", "standing": 12, "players": 36},
+        {"deck_id": "small-3", "deck_name": "d", "path": "/d", "standing": 3, "players": 36},
+        # Neither of these can be judged from the listing, so neither is dropped here.
+        {"deck_id": "no-size", "deck_name": "e", "path": "/e", "standing": 40, "players": None},
+        {"deck_id": "no-place", "deck_name": "f", "path": "/f", "standing": None, "players": 36},
+    ]
+    fetched = []
+    source._fetch_decklist = lambda stub: fetched.append(stub["deck_id"]) or [
+        DeckCard("Card", 60)
+    ]
+    source._to_deck = lambda stub, cards: stub["deck_id"]
+
+    source.fetch(date(2026, 8, 1), date(2026, 8, 31))
+    check("big-20" not in fetched, f"20th of 144 is outside the top 10%: {fetched}")
+    check("small-12" not in fetched, f"and 12th of 36 is far outside it: {fetched}")
+    check(
+        "big-12" in fetched and "small-3" in fetched,
+        f"while the finishes inside each event's own top 10% are fetched: {fetched}",
+    )
+    check(
+        "no-size" in fetched and "no-place" in fetched,
+        f"what the listing cannot judge is fetched and left to the local cut: {fetched}",
+    )
+    check(len(fetched) == 4, f"two of six pages skipped, not requested: {fetched}")
+
+    # The rounding has to match the cut that runs afterwards, or this would throw
+    # away rows the report would have kept.
+    from lorcana_meta.cli import _parse_top
+
+    half = _parse_top("50%")
+    source.top_percent = 50.0
+    for players, standing in ((31, 15), (31, 16), (30, 15), (128, 64)):
+        row = {"standing": standing, "players": players}
+        check(
+            source._inside_share(row) == (standing <= half.limit_for(players)),
+            f"listing and report agree on {standing} of {players}",
+        )
+
+
+def test_the_cli_hands_the_percentage_cut_to_the_source():
+    """A filter wired to nothing is the same as no filter.
+
+    The listing-stage cut is only reached if `--top 50%` actually arrives at the
+    source, and that wiring is one keyword argument in `_build_source` - exactly the
+    kind of line that gets dropped in a refactor while every unit test stays green.
+    """
+    import os
+
+    from lorcana_meta.cli import _build_source, _parse_args
+
+    previous = os.environ.get("INKDECKS_CONSENT")
+    os.environ["INKDECKS_CONSENT"] = "1"
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            args = _parse_args(
+                ["build", "--top", "25%", "--min-players", "32", "--last", "7"]
+            )
+            args.inkdecks_cache = directory  # unused by the constructor, kept explicit
+            source = _build_source(args)
+            check(source.top_percent == 25.0, f"the share reached it: {source.top_percent}")
+            check(source.min_players == 32, f"alongside the size floor: {source.min_players}")
+            check(source.rank == "", f"and no server-side placing filter: {source.rank!r}")
+
+            fixed = _build_source(_parse_args(["build", "--top", "8", "--last", "7"]))
+            check(fixed.top_percent is None, "a fixed cut sends no share")
+            check(fixed.rank == "top8", f"and does use the site's filter: {fixed.rank!r}")
+    finally:
+        if previous is None:
+            os.environ.pop("INKDECKS_CONSENT", None)
+        else:
+            os.environ["INKDECKS_CONSENT"] = previous
+
+
 def test_no_min_players_fetches_everything():
     from datetime import date
 

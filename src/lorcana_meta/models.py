@@ -17,7 +17,7 @@ class Card:
     name: str  # full name as it appears in decklists, e.g. "Elsa - Snow Queen"
     inks: tuple[str, ...]  # 1 ink, or 2 for dual-ink cards
     cost: int | None
-    type: str  # Character / Action / Action - Song / Item / Location
+    type: str  # Character / Action / Item / Location
     inkable: bool
     lore: int | None
     strength: int | None
@@ -26,9 +26,15 @@ class Card:
     image: str
     set_id: str
     rarity: str
+    #: Song, Floodborn, Dreamborn, Hero, Villain, ... Kept because the card type
+    #: alone no longer says whether something is a song: the previous card source
+    #: wrote "Action - Song" in `type`, the current one puts Song here instead.
+    subtypes: tuple[str, ...] = ()
 
     @property
     def is_song(self) -> bool:
+        if any(s.casefold() == "song" for s in self.subtypes):
+            return True
         return "song" in self.type.lower()
 
     @property
