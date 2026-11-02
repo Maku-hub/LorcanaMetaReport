@@ -644,16 +644,69 @@ function winningChart() {
     </div>`;
 
   if (!cut.usable) {
+    // The floor withholds the *rate*, which is what too few decks cannot support.
+    // Which archetypes reached the cut is not a rate - it is a list of what happened,
+    // and it needs no floor. Withholding that as well answered the most interesting
+    // question in the report, "what actually won?", with "pick a wider cut" while the
+    // answer sat in the data two levels down.
+    //
+    // Every row carries its denominator, because comparing the rows is exactly the
+    // error the floor exists to prevent: 3 wins from 23 lists and 1 from 2 cannot be
+    // ranked against each other, and a reader shown both numbers can see that.
+    const reached = [];
+    for (const pair of state.meta.pairs) {
+      for (const variant of pair.variants) {
+        const row = variant.results ? variant.results[cut.key] : null;
+        if (row && row.decks) {
+          reached.push({
+            label: variant.label,
+            key: pair.key,
+            reached: row.decks,
+            of: variant.decks,
+          });
+        }
+      }
+    }
+    reached.sort((a, b) => b.reached - a.reached || a.label.localeCompare(b.label));
+
     return `<section class="card">
         <div class="card__head"><h2>What is winning</h2></div>
         <p class="subtitle">
-          <b>Not shown for this cut.</b> Only ${num(cut.decks)} deck(s) in this field
+          <b>No rate for this cut.</b> Only ${num(cut.decks)} deck(s) in this field
           made ${esc(cut.label.toLowerCase())}, and ${num(
             results.min_cut_decks
           )} are needed before a rate against them means anything.
           ${cut.unknown ? `${num(cut.unknown)} deck(s) could not be judged at all.` : ""}
-          Pick a wider cut.
+          ${
+            reached.length
+              ? `Which archetypes got there is still a fact, so it is below — as counts,
+                 not rates. Read down a column, not across one: the denominators differ
+                 too much to rank on.`
+              : "Pick a wider cut."
+          }
         </p>
+        ${
+          reached.length
+            ? `<div class="table-wrap"><table>
+                <thead><tr>
+                  <th>Archetype</th>
+                  <th class="num">${esc(cut.label)}</th>
+                  <th class="num">Of its lists</th>
+                </tr></thead>
+                <tbody>${reached
+                  .map(
+                    (row) => `<tr>
+                      <td class="name"><a href="#/pair/${esc(row.key)}">${esc(
+                        row.label
+                      )}</a></td>
+                      <td class="num"><b>${num(row.reached)}</b></td>
+                      <td class="num">${num(row.of)}</td>
+                    </tr>`
+                  )
+                  .join("")}</tbody>
+              </table></div>`
+            : ""
+        }
         ${picker}
       </section>`;
   }

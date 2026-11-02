@@ -740,10 +740,86 @@ function test_a_thin_cut_is_withheld_and_says_why() {
   const html = app.winningChart();
   app.state.resultCut = null;
 
-  check(/Not shown for this cut/.test(html), "the chart is withheld");
+  check(/No rate for this cut/.test(html), "the rate is withheld");
   check(/3 deck/.test(prose(html)), "and names how few decks made it");
   check(!html.includes("bar-row"), "with no bars drawn");
   check(/Result cut/.test(html), "but the picker stays, so a wider cut is reachable");
+}
+
+/**
+ * The floor withholds the rate, not the facts.
+ *
+ * Which archetypes reached a cut is a list of what happened, not a rate, so it needs
+ * no floor. Withholding it too answered "what actually won?" with "pick a wider cut"
+ * while the answer sat in the data - on a real report, seven event wins across five
+ * archetypes, none of them shown.
+ *
+ * Each row has to carry its denominator, because comparing the rows is the error the
+ * floor exists to prevent: 3 wins from 23 lists against 1 from 2 is not a ranking.
+ */
+function test_a_thin_cut_still_names_who_reached_it() {
+  const key = "top1";
+  const meta = report((r) => {
+    r.results.cuts = r.results.cuts.map((cut) => ({ ...cut, usable: cut.key !== key }));
+    const thin = r.results.cuts.find((cut) => cut.key === key);
+    thin.decks = 4;
+    // Start from nobody reaching it, so the assertions below describe this test's
+    // own field rather than whatever the last build happened to contain.
+    r.pairs.forEach((p) =>
+      p.variants.forEach((v) => {
+        v.results[key] = { decks: 0, judged: v.decks, unknown: 0, rate: null };
+      })
+    );
+    // Two archetypes reach it from very different numbers of lists.
+    const [big, small] = [r.pairs[0].variants[0], r.pairs[0].variants[1]];
+    big.decks = 23;
+    big.results[key] = { decks: 3, judged: 23, unknown: 0, rate: null };
+    small.decks = 2;
+    small.results[key] = { decks: 1, judged: 2, unknown: 0, rate: null };
+  });
+  app.state.meta = meta;
+  app.state.resultCut = key;
+  const html = app.winningChart();
+  app.state.resultCut = null;
+
+  check(/No rate for this cut/.test(html), "the rate is still withheld");
+  check(!/%/.test(prose(html).split("Result cut")[0]), "and no percentage is printed");
+
+  const rows = [
+    ...html.matchAll(
+      /<td class="name"><a [^>]*>([^<]*)<\/a><\/td>\s*<td class="num"><b>(\d+)<\/b><\/td>\s*<td class="num">(\d+)<\/td>/g
+    ),
+  ];
+  check(rows.length === 2, `both archetypes that reached it are listed: ${rows.length}`);
+  const byCount = rows.map((r) => [Number(r[2]), Number(r[3])]);
+  check(
+    JSON.stringify(byCount) === JSON.stringify([[3, 23], [1, 2]]),
+    `counts come with their denominators, most first: ${JSON.stringify(byCount)}`
+  );
+  check(
+    /Of its lists/.test(html),
+    "the denominator column is labelled, not left for the reader to guess"
+  );
+  check(
+    /Read down a column, not across one/.test(prose(html)),
+    "and the rows are not offered as a ranking"
+  );
+
+  // A cut nothing reached has nothing to list, and must not render an empty table.
+  const none = report((r) => {
+    r.results.cuts = r.results.cuts.map((cut) => ({ ...cut, usable: false, decks: 0 }));
+    r.pairs.forEach((p) =>
+      p.variants.forEach((v) => {
+        v.results[key] = { decks: 0, judged: v.decks, unknown: 0, rate: null };
+      })
+    );
+  });
+  app.state.meta = none;
+  app.state.resultCut = key;
+  const empty = app.winningChart();
+  app.state.resultCut = null;
+  check(!/<tbody><\/tbody>/.test(empty), "no empty table body is drawn");
+  check(/Pick a wider cut/.test(prose(empty)), "it falls back to the old advice");
 }
 
 /** A cut that separates nothing at some events has to admit it. */
@@ -1315,6 +1391,7 @@ const tests = Object.entries({
   test_a_percentage_placing_cut_is_named_as_one,
   test_the_overview_ranks_on_results_as_well_as_popularity,
   test_a_thin_cut_is_withheld_and_says_why,
+  test_a_thin_cut_still_names_who_reached_it,
   test_a_cut_that_excludes_nothing_admits_it,
   test_decks_no_cut_could_judge_are_counted,
   test_the_results_axis_states_what_it_is_conditional_on,
