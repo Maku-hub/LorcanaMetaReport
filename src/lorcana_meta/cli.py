@@ -322,9 +322,18 @@ def _parse_top(value: str) -> TopCut:
             raise argparse.ArgumentTypeError(
                 f"{value!r} is not a percentage; try --top 50%"
             ) from None
+        # 0% is the one a reader arrives at honestly: `--top 0` keeps everything, so
+        # `--top 0%` looks like the same thing said with a sign. It is the opposite -
+        # a share of nothing - so it is refused rather than quietly reinterpreted,
+        # and the message names both ways of asking for the whole field.
+        if percent == 0:
+            raise argparse.ArgumentTypeError(
+                "--top 0% would keep nothing. For every placed deck use --top 0, "
+                "or --top 100% to say it as a share"
+            )
         if not 0 < percent <= 100:
             raise argparse.ArgumentTypeError(
-                f"--top {value} is outside 0-100%; 100% keeps every placed deck"
+                f"--top {value} is not a share between 0% and 100%"
             )
         return TopCut(percent=percent)
 

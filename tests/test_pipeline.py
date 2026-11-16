@@ -571,6 +571,25 @@ def test_top_percent_is_validated_and_never_cuts_server_side():
             pass
     check(_parse_top("12.5%").label == "12.5%", "a fractional share keeps its half")
 
+    # `--top 0` keeps everything, so `--top 0%` reads like the same request with a
+    # sign on it. It means the opposite, and refusing it without naming the thing
+    # the reader actually wanted just leaves them stuck.
+    try:
+        _parse_top("0%")
+        FAILURES.append("--top 0% should be rejected")
+    except argparse.ArgumentTypeError as error:
+        # "--top 0" alone would match inside "--top 0%" itself, which is the string
+        # being complained about - the message has to offer it as the alternative.
+        check(
+            "use --top 0," in str(error),
+            f"the 0% refusal offers --top 0 as what was meant: {error}",
+        )
+        check("--top 100%" in str(error), f"and the share that says the same: {error}")
+        check(
+            "keep nothing" in str(error),
+            f"while saying what 0% would actually do: {error}",
+        )
+
 
 # --------------------------------------------------------- copy distribution
 
