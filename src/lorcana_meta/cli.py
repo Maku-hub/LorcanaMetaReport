@@ -468,7 +468,16 @@ def cmd_build(args: argparse.Namespace) -> int:
     start, end = _resolve_window(args)
     source = _build_source(args)
 
-    log.info("fetching %s decks from %s: %s .. %s", args.fmt, source.name, start, end)
+    # The source names its own format; --format only labels decks that arrive
+    # without one. Logging the flag printed "fetching None decks" on every inkdecks
+    # build, which reads like something went wrong on the very first line.
+    log.info(
+        "fetching %s decks from %s: %s .. %s",
+        getattr(source, "fmt", None) or args.fmt or DEFAULT_FORMAT,
+        source.name,
+        start,
+        end,
+    )
     decks = source.fetch(start, end)
     log.info("fetched %d decklists", len(decks))
 
